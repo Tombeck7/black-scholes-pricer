@@ -56,7 +56,7 @@ sigma = st.sidebar.slider("Volatility  σ (%)",    min_value=1.0,   max_value=12
 q     = st.sidebar.slider("Dividend  q (%)",      min_value=0.0,   max_value=15.0,    value=2.0,   step=0.1) / 100
 
 st.sidebar.subheader("Option type")
-opt_type = st.sidebar.radio("", ["Call", "Put"], horizontal=True).lower()
+opt_type = st.sidebar.radio("Type", ["Call", "Put"], horizontal=True, label_visibility="collapsed").lower()
 
 # ── Pre-compute core objects ──────────────────────────────────────────────────
 call = BSOption(S, K, T, r, sigma, q, 'call')
@@ -70,6 +70,7 @@ tabs = st.tabs([
     "🔍 Implied Vol",
     "🌐 Vol Surface",
     "💼 Strategy Payoffs",
+    "🏗️ Structured Products",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -120,11 +121,11 @@ with tabs[0]:
 
     with col_c:
         st.subheader("📗 Call Greeks")
-        st.dataframe(greek_table(call, "Call"), use_container_width=True)
+        st.dataframe(greek_table(call, "Call"), width='stretch')
 
     with col_p:
         st.subheader("📕 Put Greeks")
-        st.dataframe(greek_table(put, "Put"), use_container_width=True)
+        st.dataframe(greek_table(put, "Put"), width='stretch')
 
     st.divider()
 
@@ -223,7 +224,7 @@ with tabs[1]:
     fig_g.update_layout(height=280 * nrows, showlegend=False,
                         template="plotly_dark", margin=dict(t=40, b=20))
     fig_g.update_xaxes(title_text=x_label if mode != "Volatility σ" else "σ (%)")
-    st.plotly_chart(fig_g, use_container_width=True)
+    st.plotly_chart(fig_g, width='stretch')
 
     # ── Theta decay curve ──
     st.subheader("ATM Price vs Time to Expiry (Theta decay)")
@@ -248,7 +249,7 @@ with tabs[1]:
         height=350,
         legend=dict(orientation="h", y=1.05),
     )
-    st.plotly_chart(fig_td, use_container_width=True)
+    st.plotly_chart(fig_td, width='stretch')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -320,7 +321,7 @@ with tabs[2]:
         fig_iv.update_yaxes(title_text="IV (%)")
         fig_iv.update_layout(template="plotly_dark", height=360,
                              showlegend=False, margin=dict(t=40))
-        st.plotly_chart(fig_iv, use_container_width=True)
+        st.plotly_chart(fig_iv, width='stretch')
 
     st.divider()
 
@@ -357,7 +358,7 @@ with tabs[2]:
         template="plotly_dark", height=320,
         legend=dict(orientation="h", y=1.08),
     )
-    st.plotly_chart(fig_ts, use_container_width=True)
+    st.plotly_chart(fig_ts, width='stretch')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -412,7 +413,7 @@ with tabs[3]:
                 height=580,
                 margin=dict(t=20, b=10),
             )
-            st.plotly_chart(fig_3d, use_container_width=True)
+            st.plotly_chart(fig_3d, width='stretch')
 
         elif view == "Heatmap":
             fig_hm = go.Figure(data=go.Heatmap(
@@ -427,7 +428,7 @@ with tabs[3]:
                 yaxis_title="Maturity (months)",
                 template="plotly_dark", height=480,
             )
-            st.plotly_chart(fig_hm, use_container_width=True)
+            st.plotly_chart(fig_hm, width='stretch')
 
         else:  # Smile by Maturity
             fig_sm = go.Figure()
@@ -448,7 +449,7 @@ with tabs[3]:
                 template="plotly_dark", height=480,
                 legend=dict(title="Maturity", orientation="v"),
             )
-            st.plotly_chart(fig_sm, use_container_width=True)
+            st.plotly_chart(fig_sm, width='stretch')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -591,7 +592,7 @@ with tabs[4]:
             height=460,
             legend=dict(orientation="h", y=1.06),
         )
-        st.plotly_chart(fig_st, use_container_width=True)
+        st.plotly_chart(fig_st, width='stretch')
 
         # ── Analytics box ──
         max_loss   = float(payoff.min())
@@ -612,6 +613,696 @@ with tabs[4]:
                 f"Lower B/E = **{be_lo:.2f}** | Upper B/E = **{be_hi:.2f}** | "
                 f"Implied move = **+/-{prem_total/S*100:.1f}%**"
             )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — Structured Products
+# ══════════════════════════════════════════════════════════════════════════════
+with tabs[5]:
+    st.header("Structured Products Pricer")
+    st.caption("Analytical pricing of common structured notes using Black-Scholes.")
+
+    from scipy.stats import norm as _norm
+
+    # ── Barrier option helpers ────────────────────────────────────────────────
+    def barrier_call_dao(S, K, H, T, r, sigma, q=0.0):
+        """Down-and-Out Call (H < S, H < K analytical formula)."""
+        if H >= S:
+            return 0.0
+        lam = (r - q + 0.5 * sigma**2) / sigma**2
+        x1  = np.log(S / H) / (sigma * np.sqrt(T)) + lam * sigma * np.sqrt(T)
+        x2  = np.log(S * H / (S * K)) / (sigma * np.sqrt(T)) + lam * sigma * np.sqrt(T)  # noqa
+        y1  = np.log(H**2 / (S * K)) / (sigma * np.sqrt(T)) + lam * sigma * np.sqrt(T)
+        y2  = np.log(H / S) / (sigma * np.sqrt(T)) + lam * sigma * np.sqrt(T)
+        c   = call_price(S, K, T, r, sigma, q)
+        c_i = (S * np.exp(-q*T) * (H/S)**(2*lam) * _norm.cdf(y1)
+               - K * np.exp(-r*T) * (H/S)**(2*lam-2) * _norm.cdf(y1 - sigma*np.sqrt(T)))
+        return max(c - c_i, 0.0)
+
+    def barrier_put_di(S, K, H, T, r, sigma, q=0.0):
+        """Down-and-In Put (H < S, H < K)."""
+        if H >= S:
+            return put_price(S, K, T, r, sigma, q)
+        lam  = (r - q + 0.5 * sigma**2) / sigma**2
+        y    = np.log(H**2 / (S * K)) / (sigma * np.sqrt(T)) + lam * sigma * np.sqrt(T)
+        y1   = np.log(H / S) / (sigma * np.sqrt(T)) + lam * sigma * np.sqrt(T)
+        p_di = (-S * np.exp(-q*T) * (H/S)**(2*lam) * _norm.cdf(-y)
+                + K * np.exp(-r*T) * (H/S)**(2*lam-2) * _norm.cdf(-y + sigma*np.sqrt(T)))
+        return max(p_di, 0.0)
+
+    def digital_call(S, K, T, r, sigma, q=0.0, payout=1.0):
+        """Cash-or-nothing call: pays payout if S_T > K."""
+        if T <= 0:
+            return payout if S > K else 0.0
+        from bs_core import d2 as _d2
+        return payout * np.exp(-r * T) * _norm.cdf(_d2(S, K, T, r, sigma, q))
+
+    def digital_put(S, K, T, r, sigma, q=0.0, payout=1.0):
+        """Cash-or-nothing put: pays payout if S_T < K."""
+        if T <= 0:
+            return payout if S < K else 0.0
+        from bs_core import d2 as _d2
+        return payout * np.exp(-r * T) * _norm.cdf(-_d2(S, K, T, r, sigma, q))
+
+    # ── Product selector ──────────────────────────────────────────────────────
+    product = st.selectbox("Select Structure", [
+        "Capital Protected Note (CPN)",
+        "Reverse Convertible",
+        "Participation Note (Booster)",
+        "Shark Note (Up-and-Out Call)",
+        "Down-and-In Put (PDI barrier)",
+        "Digital / Binary Option",
+        "Range Accrual (approx.)",
+        "Bonus Certificate",
+        "Standard Autocall (MC)",
+        "Phoenix Autocall (MC)",
+    ])
+
+    S_range_sp = np.linspace(S * 0.40, S * 1.60, 400)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    if product == "Capital Protected Note (CPN)":
+        st.markdown("""
+        **Structure:** ZCB (zero-coupon bond) + call option on the underlying.
+        Investor gets 100% capital back at maturity + upside participation.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            part_rate = st.slider("Participation rate (%)", 50, 200, 100) / 100
+            K_cpn = st.slider("Call strike (%S)", 80, 120, 100) / 100 * S
+            notional_cpn = st.number_input("Notional", 100.0, 10000.0, 1000.0, 100.0)
+
+            zcb   = notional_cpn * np.exp(-r * T)
+            c_val = call_price(S, K_cpn, T, r, sigma, q)
+            budget_call = notional_cpn - zcb
+            max_part    = budget_call / c_val if c_val > 0 else 0
+            issue_price = zcb + part_rate * c_val * (notional_cpn / 100)
+
+            st.metric("ZCB (PV of 100%)",      f"{zcb:.2f}")
+            st.metric("Call price (per unit)",  f"{c_val:.4f}")
+            st.metric("Issue Price",            f"{issue_price:.2f}")
+            st.metric("Max afford. part. rate", f"{max_part*100:.1f}%")
+            st.caption(f"Break-even spot at maturity: {K_cpn + (issue_price - zcb)/part_rate/(notional_cpn/100):.2f}")
+
+        with col2:
+            pf_cpn = np.maximum(notional_cpn + part_rate * (notional_cpn/100) *
+                                np.maximum(S_range_sp - K_cpn, 0), notional_cpn)
+            pf_vanilla = notional_cpn + part_rate * (notional_cpn/100) * np.maximum(S_range_sp - K_cpn, 0)
+
+            fig_cpn = go.Figure()
+            fig_cpn.add_trace(go.Scatter(x=S_range_sp, y=pf_cpn,
+                                          name="CPN payoff", line=dict(color="#00d4aa", width=2.5)))
+            fig_cpn.add_trace(go.Scatter(x=S_range_sp, y=[notional_cpn]*len(S_range_sp),
+                                          name="Capital protection", line=dict(color="gray", dash="dot")))
+            fig_cpn.add_trace(go.Scatter(x=S_range_sp, y=pf_vanilla,
+                                          name=f"Vanilla ({part_rate*100:.0f}% part.)",
+                                          line=dict(color="steelblue", dash="dash")))
+            fig_cpn.add_vline(x=S, line_dash="dash", line_color="tomato",
+                               annotation_text=f"Spot={S}")
+            fig_cpn.add_vline(x=K_cpn, line_dash="dot", line_color="gold",
+                               annotation_text=f"K={K_cpn:.0f}")
+            fig_cpn.update_layout(xaxis_title="S at maturity", yaxis_title="Payoff",
+                                   template="plotly_dark", height=420,
+                                   legend=dict(orientation="h", y=1.06))
+            st.plotly_chart(fig_cpn, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Reverse Convertible":
+        st.markdown("""
+        **Structure:** Fixed coupon bond + short put. Investor gets enhanced coupon,
+        but if S_T < K, receives shares instead of cash (full downside).
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            rc_coupon_pct = st.slider("Annual coupon (%)", 1.0, 30.0, 10.0, 0.5) / 100
+            K_rc = st.slider("Conversion strike (%S)", 60, 100, 100) / 100 * S
+            notional_rc = 100.0
+
+            coupon_pv = notional_rc * rc_coupon_pct * T * np.exp(-r * T)
+            put_val   = put_price(S, K_rc, T, r, sigma, q)
+            fair_val  = notional_rc * np.exp(-r * T) + coupon_pv - put_val * (notional_rc / S)
+
+            st.metric("Coupon PV",        f"{coupon_pv:.4f}")
+            st.metric("Short put value",  f"{put_val * (notional_rc/S):.4f}")
+            st.metric("Fair Value",       f"{fair_val:.4f}")
+            be = K_rc - rc_coupon_pct * T * K_rc
+            st.metric("Break-even (approx.)", f"{be:.2f}")
+            st.caption("Coupon compensates put sale. Risky if vol spikes.")
+
+        with col2:
+            pf_rc = np.where(
+                S_range_sp >= K_rc,
+                notional_rc * (1 + rc_coupon_pct * T),
+                notional_rc * S_range_sp / S + notional_rc * rc_coupon_pct * T
+            )
+            fig_rc = go.Figure()
+            fig_rc.add_trace(go.Scatter(x=S_range_sp, y=pf_rc,
+                                         name="Reverse Convertible", line=dict(color="#F4A261", width=2.5)))
+            fig_rc.add_trace(go.Scatter(x=S_range_sp, y=[notional_rc]*len(S_range_sp),
+                                         name="Par 100", line=dict(color="gray", dash="dot")))
+            fig_rc.add_vline(x=K_rc, line_dash="dash", line_color="tomato",
+                              annotation_text=f"Conversion K={K_rc:.0f}")
+            fig_rc.add_vline(x=S, line_dash="dot", line_color="white",
+                              annotation_text=f"Spot={S}")
+            fig_rc.update_layout(xaxis_title="S at maturity", yaxis_title="Payoff (% notional)",
+                                  template="plotly_dark", height=420,
+                                  legend=dict(orientation="h", y=1.06))
+            st.plotly_chart(fig_rc, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Participation Note (Booster)":
+        st.markdown("""
+        **Structure:** Long call (ATM) + long call spread (OTM) funded by short put.
+        Leveraged upside up to cap, full downside if S falls below put strike.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            boost_part = st.slider("Participation rate (%)", 100, 300, 150) / 100
+            K_cap      = st.slider("Cap level (%S)", 110, 200, 130) / 100 * S
+            K_put_b    = st.slider("Put strike (%S)", 60, 100, 90) / 100 * S
+
+            c_atm_b = call_price(S, S, T, r, sigma, q)
+            c_cap_b = call_price(S, K_cap, T, r, sigma, q)
+            p_put_b = put_price(S, K_put_b, T, r, sigma, q)
+            structure_cost = boost_part * (c_atm_b - c_cap_b) - p_put_b
+
+            st.metric("ATM Call",     f"{c_atm_b:.4f}")
+            st.metric("OTM Call cap", f"{c_cap_b:.4f}")
+            st.metric("Short Put",    f"{p_put_b:.4f}")
+            st.metric("Net Cost",     f"{structure_cost:.4f}",
+                      delta="credit" if structure_cost < 0 else "debit")
+
+        with col2:
+            pf_boost = np.where(
+                S_range_sp < K_put_b,
+                S_range_sp - S,
+                np.where(
+                    S_range_sp <= K_cap,
+                    boost_part * (S_range_sp - S),
+                    boost_part * (K_cap - S)
+                )
+            ) - structure_cost
+
+            fig_boost = go.Figure()
+            fig_boost.add_trace(go.Scatter(x=S_range_sp, y=pf_boost,
+                                            name="Booster Note", line=dict(color="#9C27B0", width=2.5)))
+            fig_boost.add_vline(x=S,       line_dash="dot",  line_color="white",  annotation_text="Spot")
+            fig_boost.add_vline(x=K_cap,   line_dash="dash", line_color="gold",   annotation_text=f"Cap={K_cap:.0f}")
+            fig_boost.add_vline(x=K_put_b, line_dash="dash", line_color="tomato", annotation_text=f"Put={K_put_b:.0f}")
+            fig_boost.add_hline(y=0, line_color="gray", line_width=0.8)
+            fig_boost.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
+                                     template="plotly_dark", height=420)
+            st.plotly_chart(fig_boost, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Shark Note (Up-and-Out Call)":
+        st.markdown("""
+        **Structure:** Up-and-out call (knock-out if S hits upper barrier).
+        Cheaper than vanilla call, but profit capped if market rallies too hard.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            H_uo   = st.slider("Knock-out barrier (%S)", 105, 160, 130) / 100 * S
+            K_uo   = st.slider("Strike (%S)", 80, 110, 100) / 100 * S
+            rebate = st.slider("Rebate (if knocked out)", 0.0, 5.0, 0.0, 0.1)
+
+            c_vanilla = call_price(S, K_uo, T, r, sigma, q)
+            # Up-and-out = vanilla - up-and-in. Use put-call-symmetry approximation
+            lam    = (r - q + 0.5*sigma**2) / sigma**2
+            x1_uo  = np.log(S/H_uo)/(sigma*np.sqrt(T)) + lam*sigma*np.sqrt(T)
+            y1_uo  = np.log(H_uo**2/(S*K_uo))/(sigma*np.sqrt(T)) + lam*sigma*np.sqrt(T)
+            c_ui   = max(
+                S*np.exp(-q*T)*(H_uo/S)**(2*lam)*_norm.cdf(y1_uo)
+                - K_uo*np.exp(-r*T)*(H_uo/S)**(2*lam-2)*_norm.cdf(y1_uo - sigma*np.sqrt(T)), 0
+            )
+            c_uo   = max(c_vanilla - c_ui + rebate * np.exp(-r*T), 0)
+            discount_pct = (1 - c_uo/c_vanilla)*100 if c_vanilla > 0 else 0
+
+            st.metric("Vanilla call",      f"{c_vanilla:.4f}")
+            st.metric("Up-and-Out call",   f"{c_uo:.4f}")
+            st.metric("Discount vs vanilla", f"{discount_pct:.1f}%")
+            st.caption(f"Knock-out at S = {H_uo:.1f} ({H_uo/S*100:.0f}% of spot)")
+
+        with col2:
+            # Payoff at expiry: 0 if path hit H_uo (shown as dotted), else call payoff
+            pf_uo_alive  = np.maximum(S_range_sp - K_uo, 0) - c_uo
+            pf_uo_ko     = np.where(S_range_sp >= H_uo, rebate - c_uo, pf_uo_alive)
+            pf_van_line  = np.maximum(S_range_sp - K_uo, 0) - c_vanilla
+
+            fig_uo = go.Figure()
+            fig_uo.add_trace(go.Scatter(x=S_range_sp, y=pf_uo_ko,
+                                         name="Up-and-Out Call P&L", line=dict(color="#FF9800", width=2.5)))
+            fig_uo.add_trace(go.Scatter(x=S_range_sp, y=pf_van_line,
+                                         name="Vanilla Call P&L", line=dict(color="steelblue", dash="dash")))
+            fig_uo.add_vline(x=H_uo, line_dash="dash", line_color="red",
+                              annotation_text=f"KO barrier={H_uo:.0f}")
+            fig_uo.add_vline(x=K_uo, line_dash="dot",  line_color="gold",
+                              annotation_text=f"K={K_uo:.0f}")
+            fig_uo.add_hline(y=0, line_color="gray", line_width=0.7)
+            fig_uo.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
+                                  template="plotly_dark", height=420,
+                                  legend=dict(orientation="h", y=1.06))
+            st.plotly_chart(fig_uo, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Down-and-In Put (PDI barrier)":
+        st.markdown("""
+        **Structure:** Put that only activates if underlying crosses the barrier.
+        Core building block of Autocall PDI. Cheaper than vanilla put.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            H_di   = st.slider("PDI barrier (%S)", 40, 95, 60) / 100 * S
+            K_di   = st.slider("Strike (%S)", 80, 120, 100) / 100 * S
+
+            p_vanilla = put_price(S, K_di, T, r, sigma, q)
+            p_di_val  = barrier_put_di(S, K_di, H_di, T, r, sigma, q)
+            p_do_val  = p_vanilla - p_di_val
+            discount  = (1 - p_di_val/p_vanilla)*100 if p_vanilla > 0 else 0
+
+            st.metric("Vanilla Put",      f"{p_vanilla:.4f}")
+            st.metric("Down-and-In Put",  f"{p_di_val:.4f}")
+            st.metric("Down-and-Out Put", f"{p_do_val:.4f}")
+            st.metric("DI discount",      f"{discount:.1f}%")
+            st.caption(f"PDI barrier: {H_di:.1f} ({H_di/S*100:.0f}% of spot)")
+            st.caption("DI Put = Vanilla Put (if barrier breached during life)")
+
+        with col2:
+            # Payoff at expiry given that barrier was hit (approximation: show unconditional)
+            pf_di    = np.maximum(K_di - S_range_sp, 0) - p_di_val
+            pf_van_p = np.maximum(K_di - S_range_sp, 0) - p_vanilla
+
+            fig_di = go.Figure()
+            fig_di.add_trace(go.Scatter(x=S_range_sp, y=pf_van_p,
+                                         name="Vanilla Put P&L", line=dict(color="steelblue", dash="dash")))
+            fig_di.add_trace(go.Scatter(x=S_range_sp, y=pf_di,
+                                         name="Down-and-In Put P&L", line=dict(color="#F44336", width=2.5)))
+            fig_di.add_vrect(x0=S_range_sp[0], x1=H_di,
+                              fillcolor="rgba(255,80,80,0.08)", line_width=0,
+                              annotation_text="Barrier zone")
+            fig_di.add_vline(x=H_di, line_dash="dash", line_color="red",
+                              annotation_text=f"PDI={H_di:.0f}")
+            fig_di.add_vline(x=K_di, line_dash="dot",  line_color="gold",
+                              annotation_text=f"K={K_di:.0f}")
+            fig_di.add_hline(y=0, line_color="gray", line_width=0.7)
+            fig_di.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
+                                  template="plotly_dark", height=420,
+                                  legend=dict(orientation="h", y=1.06))
+            st.plotly_chart(fig_di, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Digital / Binary Option":
+        st.markdown("""
+        **Structure:** Pays a fixed cash amount if S_T > K (call) or S_T < K (put).
+        Used in structured products as conditional coupon triggers.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            K_dig    = st.slider("Strike K (%S)", 70, 130, 100) / 100 * S
+            payout_d = st.number_input("Payout amount", 0.1, 100.0, 1.0, 0.5)
+            dig_type = st.radio("Type", ["Call", "Put"], horizontal=True)
+
+            d_call = digital_call(S, K_dig, T, r, sigma, q, payout_d)
+            d_put  = digital_put(S, K_dig, T, r, sigma, q, payout_d)
+            van_c  = call_price(S, K_dig, T, r, sigma, q)
+            van_p  = put_price(S, K_dig, T, r, sigma, q)
+
+            st.metric("Digital Call",  f"{d_call:.4f}")
+            st.metric("Digital Put",   f"{d_put:.4f}")
+            st.metric("Digital C+P",   f"{d_call+d_put:.4f}",
+                      delta=f"vs e^(-rT)={np.exp(-r*T)*payout_d:.4f}")
+            st.caption(f"Vs vanilla call: {van_c:.4f}  |  put: {van_p:.4f}")
+
+        with col2:
+            pf_dcall = np.where(S_range_sp > K_dig, payout_d, 0) - d_call
+            pf_dput  = np.where(S_range_sp < K_dig, payout_d, 0) - d_put
+
+            fig_dig = go.Figure()
+            fig_dig.add_trace(go.Scatter(x=S_range_sp, y=pf_dcall,
+                                          name="Digital Call P&L", line=dict(color="#4CAF50", width=2.5)))
+            fig_dig.add_trace(go.Scatter(x=S_range_sp, y=pf_dput,
+                                          name="Digital Put P&L",  line=dict(color="#F44336", width=2.5)))
+            fig_dig.add_vline(x=K_dig, line_dash="dash", line_color="gold",
+                               annotation_text=f"K={K_dig:.0f}")
+            fig_dig.add_vline(x=S, line_dash="dot", line_color="white",
+                               annotation_text=f"Spot={S}")
+            fig_dig.add_hline(y=0, line_color="gray", line_width=0.7)
+            fig_dig.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
+                                   template="plotly_dark", height=420,
+                                   legend=dict(orientation="h", y=1.06))
+            st.plotly_chart(fig_dig, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Range Accrual (approx.)":
+        st.markdown("""
+        **Structure:** Pays coupon proportional to the number of days S stays
+        within [L, U]. Approximated here as a digital call spread × days.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            L_ra = st.slider("Lower bound (%S)", 60, 98, 80)  / 100 * S
+            U_ra = st.slider("Upper bound (%S)", 102, 150, 120) / 100 * S
+            coupon_ra = st.slider("Annual coupon if in range (%)", 1.0, 20.0, 8.0, 0.5) / 100
+            n_days_ra = int(T * 252)
+
+            # Approx: for each future date, probability of being in range × daily coupon
+            daily_cpn = coupon_ra / 252
+            total_val = 0.0
+            for i in range(1, n_days_ra + 1):
+                ti = i / 252
+                p_above_L = digital_call(S, L_ra, ti, r, sigma, q, 1.0) / np.exp(-r*ti)
+                p_below_U = digital_put(S, U_ra, ti, r, sigma, q, 1.0) / np.exp(-r*ti)
+                p_in = max(p_above_L + p_below_U - 1, 0)
+                total_val += p_in * daily_cpn * np.exp(-r * ti)
+
+            st.metric("Range Accrual PV",  f"{total_val:.4f}")
+            st.metric("Max coupon (100%)",  f"{coupon_ra * T:.4f}")
+            st.metric("Avg accrual ratio",  f"{total_val/(coupon_ra*T)*100:.1f}%",
+                      help="Expected % of days in range")
+            st.caption(f"Range: [{L_ra:.1f}, {U_ra:.1f}]  |  {n_days_ra} observation days")
+
+        with col2:
+            # Show range on spot distribution
+            sig_range = np.linspace(S * 0.3, S * 2.0, 400)
+            from scipy.stats import lognorm as _lg
+            mu_ln  = np.log(S) + (r - q - 0.5*sigma**2) * T
+            sig_ln = sigma * np.sqrt(T)
+            pdf_T  = _lg.pdf(sig_range, s=sig_ln, scale=np.exp(mu_ln))
+
+            fig_ra = go.Figure()
+            fig_ra.add_trace(go.Scatter(x=sig_range, y=pdf_T,
+                                         name="S_T distribution", fill='tozeroy',
+                                         fillcolor="rgba(76,155,232,0.15)",
+                                         line=dict(color="#4C9BE8", width=2)))
+            fig_ra.add_vrect(x0=L_ra, x1=U_ra,
+                              fillcolor="rgba(0,212,100,0.15)", line_width=0,
+                              annotation_text="Accrual range", annotation_position="top left")
+            fig_ra.add_vline(x=S,    line_dash="dot", line_color="white",
+                              annotation_text=f"Spot={S}")
+            fig_ra.add_vline(x=L_ra, line_dash="dash", line_color="tomato",
+                              annotation_text=f"L={L_ra:.0f}")
+            fig_ra.add_vline(x=U_ra, line_dash="dash", line_color="gold",
+                              annotation_text=f"U={U_ra:.0f}")
+            fig_ra.update_layout(
+                xaxis_title="S at maturity", yaxis_title="Probability density",
+                title=f"Risk-neutral distribution of S_T (T={T:.1f}y)",
+                template="plotly_dark", height=420,
+            )
+            st.plotly_chart(fig_ra, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Bonus Certificate":
+        st.markdown("""
+        **Structure:** Long underlying + Long Down-and-In Put.
+        Delivers bonus level if barrier never breached; full upside otherwise.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            H_bon  = st.slider("PDI barrier (%S)", 40, 90, 65) / 100 * S
+            bonus  = st.slider("Bonus level (%S)", 110, 160, 120) / 100 * S
+
+            p_di_b  = barrier_put_di(S, bonus, H_bon, T, r, sigma, q)
+            cost_b  = S * np.exp(-q*T) + p_di_b - S    # cost vs just holding stock
+            fair_b  = S + p_di_b
+
+            st.metric("Underlying (PV)",   f"{S*np.exp(-q*T):.2f}")
+            st.metric("DI Put value",      f"{p_di_b:.4f}")
+            st.metric("Bonus Certificate", f"{fair_b:.2f}")
+            st.metric("Premium vs stock",  f"{cost_b:+.4f}")
+            st.caption(f"Bonus at {bonus:.0f} if barrier {H_bon:.0f} never touched")
+
+        with col2:
+            pf_bonus = np.where(
+                S_range_sp >= bonus, S_range_sp,
+                np.where(S_range_sp >= H_bon, bonus, S_range_sp)
+            ) - fair_b
+            pf_stock = S_range_sp - S
+
+            fig_bon = go.Figure()
+            fig_bon.add_trace(go.Scatter(x=S_range_sp, y=pf_stock,
+                                          name="Long stock P&L", line=dict(color="gray", dash="dash")))
+            fig_bon.add_trace(go.Scatter(x=S_range_sp, y=pf_bonus,
+                                          name="Bonus Certificate P&L", line=dict(color="#00BCD4", width=2.5)))
+            fig_bon.add_vrect(x0=S_range_sp[0], x1=H_bon,
+                               fillcolor="rgba(255,80,80,0.08)", line_width=0)
+            fig_bon.add_vline(x=H_bon, line_dash="dash", line_color="tomato",
+                               annotation_text=f"Barrier={H_bon:.0f}")
+            fig_bon.add_vline(x=bonus, line_dash="dot", line_color="gold",
+                               annotation_text=f"Bonus={bonus:.0f}")
+            fig_bon.add_hline(y=0, line_color="gray", line_width=0.7)
+            fig_bon.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
+                                   template="plotly_dark", height=420,
+                                   legend=dict(orientation="h", y=1.06))
+            st.plotly_chart(fig_bon, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Standard Autocall (MC)":
+        st.markdown("""
+        **Structure:** Annual observation autocall.
+        Recalled with coupon if S(ti) >= B_ac × S0; otherwise PDI risk at maturity.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            ac_T      = st.slider("Maturity (years)",        1.0, 5.0,  3.0, 0.5, key="ac_T")
+            ac_cpn    = st.slider("Annual coupon (%)",       1.0, 25.0, 8.0, 0.5, key="ac_cpn") / 100
+            ac_bac    = st.slider("Recall barrier (%S0)",   80, 120, 100, key="ac_bac")   / 100
+            ac_bpdi   = st.slider("PDI barrier (%S0)",      40,  90,  60, key="ac_bpdi")  / 100
+            ac_paths  = st.select_slider("MC paths", [10_000, 25_000, 50_000], 25_000, key="ac_paths")
+            run_ac    = st.button("Price Autocall", type="primary", key="btn_ac")
+
+        with col2:
+            if run_ac:
+                with st.spinner("Running Monte Carlo..."):
+                    @st.cache_data
+                    def _price_autocall(s0, r_, sig_, q_, T_, cpn_, bac_, bpdi_, n_, seed_=42):
+                        rng   = np.random.default_rng(seed_)
+                        steps = int(252 * T_)
+                        dt_   = T_ / steps
+                        half  = n_ // 2
+                        Z_h   = rng.standard_normal((half, steps))
+                        Z_    = np.concatenate([Z_h, -Z_h], axis=0)
+                        lp    = np.cumsum((r_ - q_ - 0.5*sig_**2)*dt_ + sig_*np.sqrt(dt_)*Z_, axis=1)
+                        paths_ = s0 * np.exp(np.concatenate([np.zeros((n_, 1)), lp], axis=1))
+                        obs_ts = np.arange(1, int(round(T_))+1, dtype=float)[:int(round(T_/1.0))]
+                        payoffs_ = np.full(n_, np.nan)
+                        called_  = np.zeros(n_, dtype=bool)
+                        call_date_ = np.full(n_, np.nan)
+                        call_prob_ = {}
+                        for ot in obs_ts:
+                            idx_ = min(round(ot/dt_), steps)
+                            trig = ~called_ & (paths_[:, idx_] >= bac_ * s0)
+                            disc_ = np.exp(-r_ * ot)
+                            payoffs_ = np.where(trig & np.isnan(payoffs_),
+                                                disc_ * s0 * (1 + cpn_ * ot), payoffs_)
+                            call_date_ = np.where(trig & ~called_, ot, call_date_)
+                            called_ = called_ | trig
+                            call_prob_[ot] = float(trig.mean())
+                        pmin_ = paths_[:, 1:].min(axis=1)
+                        pdi_  = pmin_ < bpdi_ * s0
+                        sT_   = paths_[:, -1]
+                        disc_T_ = np.exp(-r_ * T_)
+                        mat_pf_ = np.where(pdi_, s0 * sT_ / s0, s0 * 1.0)
+                        payoffs_ = np.where(np.isnan(payoffs_), disc_T_ * mat_pf_, payoffs_)
+                        price_   = float(payoffs_.mean())
+                        se_      = float(payoffs_.std(ddof=1) / np.sqrt(n_))
+                        return (price_, se_, float(called_.mean()), float(pdi_.mean()),
+                                float((~called_&~pdi_).mean()), float(np.nanmean(call_date_)),
+                                call_prob_, payoffs_)
+
+                    res = _price_autocall(S, r, sigma, q, ac_T, ac_cpn,
+                                          ac_bac, ac_bpdi, ac_paths)
+                    pr_, se_, pc_, ppdi_, pok_, acd_, cpdict_, pfs_ = res
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Fair Value",    f"{pr_:.4f}", f"{pr_-S:+.2f} vs S0")
+                m2.metric("Std Error",     f"{se_:.4f}")
+                m3.metric("95% CI",        f"[{pr_-1.96*se_:.3f}, {pr_+1.96*se_:.3f}]")
+                p1, p2, p3 = st.columns(3)
+                p1.metric("P(Called)",     f"{pc_*100:.1f}%")
+                p2.metric("P(PDI)",        f"{ppdi_*100:.1f}%")
+                p3.metric("P(Mat. OK)",    f"{pok_*100:.1f}%")
+                if not np.isnan(acd_):
+                    st.caption(f"Average call date: **{acd_:.2f}y**")
+
+                fig_ac = go.Figure(go.Bar(
+                    x=[f"T={t:.0f}y" for t in cpdict_],
+                    y=[v*100 for v in cpdict_.values()],
+                    marker_color="#4CAF50",
+                ))
+                fig_ac.update_layout(title="P(called) by observation date",
+                                     xaxis_title="Date", yaxis_title="Probability (%)",
+                                     template="plotly_dark", height=280, margin=dict(t=35))
+                st.plotly_chart(fig_ac, width='stretch')
+
+                fig_hist_ac = go.Figure()
+                fig_hist_ac.add_trace(go.Histogram(x=pfs_, nbinsx=60,
+                                                    marker_color="#4C9BE8", opacity=0.75,
+                                                    histnorm="probability density", name="Payoffs"))
+                fig_hist_ac.add_vline(x=pr_, line_dash="dash", line_color="white",
+                                      annotation_text=f"FV={pr_:.2f}")
+                fig_hist_ac.add_vline(x=S, line_dash="dot", line_color="gold",
+                                      annotation_text="Par")
+                fig_hist_ac.update_layout(xaxis_title="Discounted Payoff", yaxis_title="Density",
+                                          template="plotly_dark", height=260, margin=dict(t=10))
+                st.plotly_chart(fig_hist_ac, width='stretch')
+            else:
+                st.info("Set parameters and click **Price Autocall**.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    elif product == "Phoenix Autocall (MC)":
+        st.markdown("""
+        **Structure:** Quarterly observation Phoenix with coupon barrier and optional memory.
+        Coupon paid on each date S(ti) >= B_cpn × S0, even if not recalled.
+        """)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            ph_T     = st.slider("Maturity (years)",         1.0, 5.0,  3.0, 0.5, key="ph_T")
+            ph_cpn   = st.slider("Annual coupon (%)",        1.0, 30.0, 10.0, 0.5, key="ph_cpn") / 100
+            ph_bac   = st.slider("Recall barrier (%S0)",    80, 120, 100, key="ph_bac")   / 100
+            ph_bpdi  = st.slider("PDI barrier (%S0)",       40,  90,  60, key="ph_bpdi")  / 100
+            ph_bcpn  = st.slider("Coupon barrier (%S0)",    50, 100,  70, key="ph_bcpn")  / 100
+            ph_mem   = st.checkbox("Memory coupon", value=True, key="ph_mem")
+            ph_paths = st.select_slider("MC paths", [10_000, 25_000, 50_000], 25_000, key="ph_paths")
+            run_ph   = st.button("Price Phoenix", type="primary", key="btn_ph")
+
+        with col2:
+            if run_ph:
+                with st.spinner("Running Monte Carlo..."):
+                    @st.cache_data
+                    def _price_phoenix(s0, r_, sig_, q_, T_, cpn_, bac_, bpdi_, bcpn_, mem_, n_, seed_=42):
+                        rng   = np.random.default_rng(seed_)
+                        steps = int(252 * T_)
+                        dt_   = T_ / steps
+                        half  = n_ // 2
+                        Z_h   = rng.standard_normal((half, steps))
+                        Z_    = np.concatenate([Z_h, -Z_h], axis=0)
+                        lp    = np.cumsum((r_ - q_ - 0.5*sig_**2)*dt_ + sig_*np.sqrt(dt_)*Z_, axis=1)
+                        paths_ = s0 * np.exp(np.concatenate([np.zeros((n_, 1)), lp], axis=1))
+                        n_obs  = int(round(T_ / 0.25))
+                        obs_ts = np.array([0.25*(i+1) for i in range(n_obs)])
+                        payoffs_ = np.full(n_, np.nan)
+                        called_  = np.zeros(n_, dtype=bool)
+                        call_date_ = np.full(n_, np.nan)
+                        pending  = np.zeros(n_)
+                        cpn_per_obs = s0 * cpn_ * 0.25
+                        call_prob_ = {}
+                        for ot in obs_ts:
+                            idx_ = min(round(ot/dt_), steps)
+                            Sobs = paths_[:, idx_]
+                            active = ~called_
+                            cpn_elig = active & (Sobs >= bcpn_ * s0)
+                            if mem_:
+                                pending += np.where(active, cpn_per_obs, 0)
+                            trig = active & (Sobs >= bac_ * s0)
+                            recall_amt = s0 + pending if mem_ else s0 * (1 + cpn_ * ot)
+                            disc_ = np.exp(-r_ * ot)
+                            payoffs_ = np.where(trig & np.isnan(payoffs_),
+                                                disc_ * recall_amt, payoffs_)
+                            if not mem_:
+                                cpn_pay = np.where(cpn_elig & ~trig & np.isnan(payoffs_),
+                                                   disc_ * cpn_per_obs, 0)
+                                payoffs_ = np.where(cpn_elig & ~trig,
+                                                    np.where(np.isnan(payoffs_),
+                                                             cpn_pay,
+                                                             payoffs_ + disc_ * cpn_per_obs),
+                                                    payoffs_)
+                            call_date_ = np.where(trig & ~called_, ot, call_date_)
+                            called_ = called_ | trig
+                            call_prob_[ot] = float(trig.mean())
+                        pmin_ = paths_[:, 1:].min(axis=1)
+                        pdi_  = pmin_ < bpdi_ * s0
+                        sT_   = paths_[:, -1]
+                        disc_T_ = np.exp(-r_ * T_)
+                        mat_base = np.where(pdi_, s0 * sT_ / s0, s0)
+                        mat_pf_  = mat_base + (pending if mem_ else 0)
+                        payoffs_ = np.where(np.isnan(payoffs_), disc_T_ * mat_pf_, payoffs_)
+                        price_   = float(payoffs_.mean())
+                        se_      = float(payoffs_.std(ddof=1) / np.sqrt(n_))
+                        return (price_, se_, float(called_.mean()), float(pdi_.mean()),
+                                float((~called_&~pdi_).mean()), float(np.nanmean(call_date_)),
+                                call_prob_, payoffs_)
+
+                    res_ph = _price_phoenix(S, r, sigma, q, ph_T, ph_cpn,
+                                            ph_bac, ph_bpdi, ph_bcpn, ph_mem, ph_paths)
+                    pr_p, se_p, pc_p, ppdi_p, pok_p, acd_p, cpd_p, pfs_p = res_ph
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Fair Value",  f"{pr_p:.4f}", f"{pr_p-S:+.2f} vs S0")
+                m2.metric("Std Error",   f"{se_p:.4f}")
+                m3.metric("95% CI",      f"[{pr_p-1.96*se_p:.3f}, {pr_p+1.96*se_p:.3f}]")
+                p1, p2, p3 = st.columns(3)
+                p1.metric("P(Called)",   f"{pc_p*100:.1f}%")
+                p2.metric("P(PDI)",      f"{ppdi_p*100:.1f}%")
+                p3.metric("P(Mat. OK)",  f"{pok_p*100:.1f}%")
+                if not np.isnan(acd_p):
+                    st.caption(f"Average call date: **{acd_p:.2f}y**")
+
+                # Quarterly call profile
+                obs_labels = [f"T={t:.2f}y" for t in cpd_p]
+                fig_ph = go.Figure(go.Bar(
+                    x=obs_labels, y=[v*100 for v in cpd_p.values()],
+                    marker_color="#E91E63",
+                ))
+                fig_ph.update_layout(title="P(called) by quarterly observation",
+                                     xaxis_title="Date", yaxis_title="Probability (%)",
+                                     template="plotly_dark", height=300, margin=dict(t=35))
+                st.plotly_chart(fig_ph, width='stretch')
+
+                fig_hist_ph = go.Figure()
+                fig_hist_ph.add_trace(go.Histogram(x=pfs_p, nbinsx=60,
+                                                    marker_color="#E91E63", opacity=0.75,
+                                                    histnorm="probability density", name="Payoffs"))
+                fig_hist_ph.add_vline(x=pr_p, line_dash="dash", line_color="white",
+                                      annotation_text=f"FV={pr_p:.2f}")
+                fig_hist_ph.add_vline(x=S, line_dash="dot", line_color="gold",
+                                      annotation_text="Par")
+                fig_hist_ph.update_layout(xaxis_title="Discounted Payoff", yaxis_title="Density",
+                                          template="plotly_dark", height=260, margin=dict(t=10))
+                st.plotly_chart(fig_hist_ph, width='stretch')
+            else:
+                st.info("Set parameters and click **Price Phoenix**.")
+
+    # ── Sensitivity table (price vs spot) ─────────────────────────────────────
+    st.divider()
+    st.subheader("Quick Greeks — this structure")
+
+    g1, g2, g3, g4 = st.columns(4)
+    dS_bump = S * 0.01
+    dv_bump = 0.01
+
+    def struct_price_at(s_, sig_):
+        if product == "Capital Protected Note (CPN)":
+            return (100 * np.exp(-r*T)
+                    + part_rate * call_price(s_, K_cpn, T, r, sig_, q) * (100/100))
+        elif product == "Reverse Convertible":
+            return (100 * np.exp(-r*T) + 100*rc_coupon_pct*T*np.exp(-r*T)
+                    - put_price(s_, K_rc, T, r, sig_, q) * (100/s_))
+        elif product == "Down-and-In Put (PDI barrier)":
+            return barrier_put_di(s_, K_di, H_di, T, r, sig_, q)
+        elif product == "Digital / Binary Option":
+            return digital_call(s_, K_dig, T, r, sig_, q, payout_d)
+        elif product == "Shark Note (Up-and-Out Call)":
+            return call_price(s_, K_uo, T, r, sig_, q) - max(
+                s_*np.exp(-q*T)*(H_uo/s_)**(2*lam)*_norm.cdf(np.log(H_uo**2/(s_*K_uo))/(sig_*np.sqrt(T))+(r-q+0.5*sig_**2)/sig_**2*sig_*np.sqrt(T))
+                - K_uo*np.exp(-r*T)*(H_uo/s_)**(2*lam-2)*_norm.cdf(np.log(H_uo**2/(s_*K_uo))/(sig_*np.sqrt(T))+(r-q-0.5*sig_**2)/sig_**2*sig_*np.sqrt(T)), 0)
+        else:
+            return call_price(s_, K, T, r, sig_, q)
+
+    try:
+        v0s  = struct_price_at(S, sigma)
+        v_su = struct_price_at(S + dS_bump, sigma)
+        v_sd = struct_price_at(S - dS_bump, sigma)
+        v_vu = struct_price_at(S, sigma + dv_bump)
+        v_vd = struct_price_at(S, sigma - dv_bump)
+        s_delta = (v_su - v_sd) / (2 * dS_bump)
+        s_gamma = (v_su - 2*v0s + v_sd) / dS_bump**2
+        s_vega  = (v_vu - v_vd) / (2 * dv_bump)
+        g1.metric("Price",  f"{v0s:.4f}")
+        g2.metric("Delta",  f"{s_delta:.4f}")
+        g3.metric("Gamma",  f"{s_gamma:.6f}")
+        g4.metric("Vega",   f"{s_vega:.4f}")
+    except Exception:
+        st.caption("Greeks not available for this structure in current config.")
+
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
