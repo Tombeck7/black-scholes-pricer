@@ -161,20 +161,15 @@ live = st.session_state.live
 if live:
     chg_class = "chg-pos" if live["change"] >= 0 else "chg-neg"
     chg_sign  = "+" if live["change"] >= 0 else ""
-    st.markdown(f"""
-    <div class="live-banner">
-        <span class="ticker-pill">{live['ticker']}</span>
-        <span class="price-big">{live['price']:.2f} {live['currency']}</span>
-        <span class="{chg_class}">{chg_sign}{live['change']:.2f} ({chg_sign}{live['change_pct']:.2f}%)</span>
-        &nbsp;&nbsp;
-        <span style="color:#94a3b8;font-size:.85rem">
-            HV 1M: <b style="color:#e2e8f0">{live['sigma_1m']*100:.1f}%</b> &nbsp;
-            HV 3M: <b style="color:#e2e8f0">{live['sigma_3m']*100:.1f}%</b> &nbsp;
-            52W: <b style="color:#22c55e">{live['high_52w']:.2f}</b> / <b style="color:#ef4444">{live['low_52w']:.2f}</b>
-            {"&nbsp; Beta: <b style='color:#e2e8f0'>" + f"{live['beta']:.2f}" + "</b>" if live.get('beta') else ""}
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
+    beta_str = f" &nbsp; Beta: <b style='color:#e2e8f0'>{live['beta']:.2f}</b>" if live.get('beta') else ""
+    hv_str   = f"HV 1M <b style='color:#e2e8f0'>{live['sigma_1m']*100:.1f}%</b> &nbsp; HV 3M <b style='color:#e2e8f0'>{live['sigma_3m']*100:.1f}%</b>{beta_str}"
+    st.markdown(
+        f"<div class='live-banner'><span class='ticker-pill'>{live['ticker']}</span>&nbsp;"
+        f"<span class='price-big'>{live['price']:.2f} {live['currency']}</span>&nbsp;"
+        f"<span class='{chg_class}'>{chg_sign}{live['change_pct']:.2f}%</span>&nbsp;&nbsp;"
+        f"<span style='color:#94a3b8;font-size:.85rem'>{hv_str}</span></div>",
+        unsafe_allow_html=True,
+    )
 
 # ── Pre-compute core objects ──────────────────────────────────────────────────
 call = BSOption(S, K, T, r, sigma, q, 'call')
@@ -273,8 +268,8 @@ with tabs[0]:
         r1 = st.columns(6)
         r1[0].metric('Price',      f"{live['price']:.2f} {live['currency']}",
                      f"{live['change_pct']:+.2f}%")
-        r1[1].metric('Day range',  f"{live['low_day']:.2f} / {live['high_day']:.2f}")
-        r1[2].metric('52W range',  f"{live['low_52w']:.2f} / {live['high_52w']:.2f}")
+        r1[1].metric('Day range',  f"{live.get('low_day', live['price']):.2f} / {live.get('high_day', live['price']):.2f}")
+        r1[2].metric('52W range',  f"{live.get('low_52w', 0):.2f} / {live.get('high_52w', 0):.2f}")
         r1[3].metric('HV 1M',      f"{live['sigma_1m']*100:.1f}%")
         r1[4].metric('HV 3M',      f"{live['sigma_3m']*100:.1f}%")
         r1[5].metric('HV 1Y',      f"{live['sigma_1y']*100:.1f}%")
