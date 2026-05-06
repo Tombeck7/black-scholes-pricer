@@ -184,6 +184,7 @@ tabs = st.tabs([
     "🌐 Vol Surface",
     "💼 Strategy Payoffs",
     "🏗️ Structured Products",
+    "📐 Delta Hedging",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
