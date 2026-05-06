@@ -21,6 +21,54 @@ from payoff_analysis import (
     collar, covered_call, protective_put,
     preexpiry_pnl_straddle, straddle_breakevens,
 )
+from live_data import fetch, risk_free_rate
+
+# ── Design tokens ─────────────────────────────────────────────────────────────
+C = dict(
+    primary   = "#6366f1",
+    success   = "#22c55e",
+    danger    = "#ef4444",
+    warning   = "#f59e0b",
+    info      = "#38bdf8",
+    purple    = "#a855f7",
+    pink      = "#ec4899",
+    text      = "#e2e8f0",
+    muted     = "#94a3b8",
+    grid      = "rgba(255,255,255,0.06)",
+    line      = "rgba(255,255,255,0.12)",
+    bg        = "rgba(0,0,0,0)",
+)
+
+def sf(fig, title="", height=420, legend_h=True):
+    """Apply consistent style to a Plotly figure."""
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=13, color=C["text"]), x=0.01),
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")),
+        height=height,
+        paper_bgcolor=C["bg"],
+        plot_bgcolor=C["bg"],
+        font=dict(family="Inter, system-ui, sans-serif", size=11, color=C["text"]),
+        margin=dict(t=45 if title else 20, b=36, l=52, r=16),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)", borderwidth=0,
+            orientation="h" if legend_h else "v",
+            y=1.06 if legend_h else 1,
+            font=dict(size=10),
+        ),
+        hoverlabel=dict(
+            bgcolor="#1e293b", bordercolor=C["line"],
+            font=dict(size=11, color=C["text"]),
+        ),
+    )
+    fig.update_xaxes(
+        gridcolor=C["grid"], linecolor=C["line"],
+        zeroline=False, showgrid=True,
+    )
+    fig.update_yaxes(
+        gridcolor=C["grid"], linecolor=C["line"],
+        zeroline=False, showgrid=True,
+    )
+    return fig
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -32,31 +80,104 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .metric-card {
-        background: #1e2130;
-        border-radius: 8px;
-        padding: 12px 18px;
-        margin: 4px 0;
-    }
-    .greek-pos { color: #00d4aa; font-weight: bold; }
-    .greek-neg { color: #ff6b6b; font-weight: bold; }
-    div[data-testid="stMetricValue"] { font-size: 1.4rem; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+[data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
+
+div[data-testid="stMetricValue"]  { font-size: 1.5rem; font-weight: 700; }
+div[data-testid="stMetricLabel"]  { font-size: 0.75rem; color: #94a3b8; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
+div[data-testid="stMetricDelta"]  { font-size: 0.8rem; }
+
+.live-banner {
+    background: linear-gradient(90deg, #0f2027, #203a43, #2c5364);
+    border: 1px solid #38bdf8;
+    border-radius: 10px;
+    padding: 12px 18px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.ticker-pill {
+    background: #6366f1;
+    color: white;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-weight: 700;
+    font-size: .85rem;
+    letter-spacing: .05em;
+}
+.price-big { font-size: 1.6rem; font-weight: 700; color: #e2e8f0; }
+.chg-pos   { color: #22c55e; font-weight: 600; }
+.chg-neg   { color: #ef4444; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Sidebar — Global Parameters ───────────────────────────────────────────────
-st.sidebar.title("⚙️ Parameters")
+# ── Session state defaults ────────────────────────────────────────────────────
+for k, v in dict(S=100.0, K=100.0, r=5.0, sigma=20.0, q=2.0, live=None).items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-st.sidebar.subheader("Market")
-S     = st.sidebar.number_input("Spot  S",        min_value=1.0,   max_value=10000.0, value=100.0, step=1.0)
-K     = st.sidebar.number_input("Strike  K",      min_value=1.0,   max_value=10000.0, value=100.0, step=1.0)
-T     = st.sidebar.slider("Maturity  T (years)",  min_value=0.01,  max_value=5.0,     value=1.0,   step=0.01)
-r     = st.sidebar.slider("Risk-free  r (%)",     min_value=0.0,   max_value=15.0,    value=5.0,   step=0.1) / 100
-sigma = st.sidebar.slider("Volatility  σ (%)",    min_value=1.0,   max_value=120.0,   value=20.0,  step=0.5) / 100
-q     = st.sidebar.slider("Dividend  q (%)",      min_value=0.0,   max_value=15.0,    value=2.0,   step=0.1) / 100
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+st.sidebar.title("📈 Black-Scholes Pricer")
+st.sidebar.divider()
+
+# Live data
+st.sidebar.subheader("🔴 Live Market Data")
+col_t, col_b = st.sidebar.columns([3, 1])
+ticker_input = col_t.text_input("Ticker", value="SPY", label_visibility="collapsed",
+                                 placeholder="SPY, AAPL, MSFT...")
+if col_b.button("Load", use_container_width=True):
+    with st.spinner(f"Fetching {ticker_input.upper()}..."):
+        data = fetch(ticker_input.strip().upper())
+    if data:
+        st.session_state.live  = data
+        st.session_state.S     = round(data["price"], 2)
+        st.session_state.K     = round(data["price"], 2)
+        st.session_state.sigma = round(data["sigma_3m"] * 100, 1)
+        try:
+            st.session_state.r = round(risk_free_rate() * 100, 2)
+        except Exception:
+            pass
+        st.sidebar.success(f"{data['ticker']}  {data['price']:.2f}  ({data['change_pct']:+.2f}%)")
+    else:
+        st.sidebar.error("Ticker not found.")
+
+st.sidebar.divider()
+st.sidebar.subheader("⚙️ Parameters")
+
+S     = st.sidebar.number_input("Spot  S",  1.0, 10000.0, float(st.session_state.S), 1.0)
+K     = st.sidebar.number_input("Strike K", 1.0, 10000.0, float(st.session_state.K), 1.0)
+T     = st.sidebar.slider("Maturity T (years)", 0.01, 5.0, 1.0, 0.01)
+r     = st.sidebar.slider("Risk-free r (%)",    0.0, 15.0, float(st.session_state.r),   0.1) / 100
+sigma = st.sidebar.slider("Volatility σ (%)",   1.0, 120.0, float(st.session_state.sigma), 0.5) / 100
+q     = st.sidebar.slider("Dividend q (%)",     0.0, 15.0,  2.0, 0.1) / 100
 
 st.sidebar.subheader("Option type")
-opt_type = st.sidebar.radio("Type", ["Call", "Put"], horizontal=True, label_visibility="collapsed").lower()
+opt_type = st.sidebar.radio("Type", ["Call", "Put"], horizontal=True,
+                             label_visibility="collapsed").lower()
+
+# ── Live banner ───────────────────────────────────────────────────────────────
+live = st.session_state.live
+if live:
+    chg_class = "chg-pos" if live["change"] >= 0 else "chg-neg"
+    chg_sign  = "+" if live["change"] >= 0 else ""
+    st.markdown(f"""
+    <div class="live-banner">
+        <span class="ticker-pill">{live['ticker']}</span>
+        <span class="price-big">{live['price']:.2f} {live['currency']}</span>
+        <span class="{chg_class}">{chg_sign}{live['change']:.2f} ({chg_sign}{live['change_pct']:.2f}%)</span>
+        &nbsp;&nbsp;
+        <span style="color:#94a3b8;font-size:.85rem">
+            HV 1M: <b style="color:#e2e8f0">{live['sigma_1m']*100:.1f}%</b> &nbsp;
+            HV 3M: <b style="color:#e2e8f0">{live['sigma_3m']*100:.1f}%</b> &nbsp;
+            52W: <b style="color:#22c55e">{live['high_52w']:.2f}</b> / <b style="color:#ef4444">{live['low_52w']:.2f}</b>
+            {"&nbsp; Beta: <b style='color:#e2e8f0'>" + f"{live['beta']:.2f}" + "</b>" if live.get('beta') else ""}
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ── Pre-compute core objects ──────────────────────────────────────────────────
 call = BSOption(S, K, T, r, sigma, q, 'call')
@@ -145,6 +266,56 @@ with tabs[0]:
         f"PV(K) = K·e^(-rT) = **{K * np.exp(-r*T):.4f}**"
     )
 
+    # -- Live price chart -------------------------------------------------
+    if live and 'hist' in live:
+        st.divider()
+        st.subheader(f"📊 {live['ticker']} — Price History (1Y)")
+        hist_df = live['hist'].tail(252)
+        fig_live = go.Figure()
+        fig_live.add_trace(go.Candlestick(
+            x=hist_df.index,
+            open=hist_df['Open'], high=hist_df['High'],
+            low=hist_df['Low'],   close=hist_df['Close'],
+            increasing_line_color='#22c55e', decreasing_line_color='#ef4444',
+            name='Price',
+        ))
+        ma20 = hist_df['Close'].rolling(20).mean()
+        fig_live.add_trace(go.Scatter(x=hist_df.index, y=ma20, name='MA 20',
+                                       line=dict(color='#f59e0b', width=1.5, dash='dot')))
+        fig_live.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)', height=380, xaxis_rangeslider_visible=False,
+            font=dict(family='Inter, sans-serif', color='#e2e8f0'),
+            margin=dict(t=16,b=30,l=52,r=16),
+            legend=dict(orientation='h', y=1.04, bgcolor='rgba(0,0,0,0)'),
+        )
+        fig_live.update_xaxes(gridcolor='rgba(255,255,255,0.06)', linecolor='rgba(255,255,255,0.12)')
+        fig_live.update_yaxes(gridcolor='rgba(255,255,255,0.06)', linecolor='rgba(255,255,255,0.12)')
+        st.plotly_chart(fig_live, width='stretch')
+
+        rets_df = live['returns'].tail(252)
+        from scipy.stats import norm as _norm_live
+        fig_ret = go.Figure()
+        fig_ret.add_trace(go.Histogram(x=rets_df*100, nbinsx=80,
+            marker_color='#6366f1', opacity=0.8, histnorm='probability density', name='Daily returns'))
+        mu_r  = float(rets_df.mean()*100)
+        sig_r = float(rets_df.std()*100)
+        xs    = np.linspace(mu_r-4*sig_r, mu_r+4*sig_r, 200)
+        fig_ret.add_trace(go.Scatter(x=xs, y=_norm_live.pdf(xs, mu_r, sig_r),
+            name='Normal', line=dict(color='#f59e0b', width=2)))
+        fig_ret.add_vline(x=0, line_color='#94a3b8', line_dash='dot')
+        fig_ret.update_layout(
+            title=f"Daily Returns | HV1M {live['sigma_1m']*100:.1f}%  HV3M {live['sigma_3m']*100:.1f}%  HV1Y {live['sigma_1y']*100:.1f}%",
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            height=280, font=dict(family='Inter, sans-serif', color='#e2e8f0'),
+            margin=dict(t=40,b=30,l=52,r=16),
+            legend=dict(orientation='h', y=1.04, bgcolor='rgba(0,0,0,0)'),
+        )
+        fig_ret.update_xaxes(gridcolor='rgba(255,255,255,0.06)')
+        fig_ret.update_yaxes(gridcolor='rgba(255,255,255,0.06)')
+        st.plotly_chart(fig_ret, width='stretch')
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Greeks Profiles
@@ -222,7 +393,7 @@ with tabs[1]:
         fig_g.add_hline(y=0, line_width=0.5, line_color="gray", row=row, col=col)
 
     fig_g.update_layout(height=280 * nrows, showlegend=False,
-                        template="plotly_dark", margin=dict(t=40, b=20))
+                        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), margin=dict(t=40, b=20))
     fig_g.update_xaxes(title_text=x_label if mode != "Volatility σ" else "σ (%)")
     st.plotly_chart(fig_g, width='stretch')
 
@@ -245,7 +416,7 @@ with tabs[1]:
         xaxis_title="Time to Expiry (years)",
         yaxis_title="Price",
         xaxis_autorange="reversed",
-        template="plotly_dark",
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")),
         height=350,
         legend=dict(orientation="h", y=1.05),
     )
@@ -319,7 +490,7 @@ with tabs[2]:
         fig_iv.add_vline(x=0.0, line_dash="dash", line_color="tomato",
                          annotation_text="ATM", row=1, col=2)
         fig_iv.update_yaxes(title_text="IV (%)")
-        fig_iv.update_layout(template="plotly_dark", height=360,
+        fig_iv.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=360,
                              showlegend=False, margin=dict(t=40))
         st.plotly_chart(fig_iv, width='stretch')
 
@@ -355,7 +526,7 @@ with tabs[2]:
                      annotation_text=f"T={T:.2f}y")
     fig_ts.update_layout(
         xaxis_title="Maturity (months)", yaxis_title="Vol (%)",
-        template="plotly_dark", height=320,
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=320,
         legend=dict(orientation="h", y=1.08),
     )
     st.plotly_chart(fig_ts, width='stretch')
@@ -409,7 +580,7 @@ with tabs[3]:
                     zaxis_title="IV (%)",
                     camera=dict(eye=dict(x=1.6, y=-1.8, z=0.9)),
                 ),
-                template="plotly_dark",
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")),
                 height=580,
                 margin=dict(t=20, b=10),
             )
@@ -426,7 +597,7 @@ with tabs[3]:
             fig_hm.update_layout(
                 xaxis_title="Strike K",
                 yaxis_title="Maturity (months)",
-                template="plotly_dark", height=480,
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=480,
             )
             st.plotly_chart(fig_hm, width='stretch')
 
@@ -446,7 +617,7 @@ with tabs[3]:
                              annotation_text="Spot")
             fig_sm.update_layout(
                 xaxis_title="Strike K", yaxis_title="IV (%)",
-                template="plotly_dark", height=480,
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=480,
                 legend=dict(title="Maturity", orientation="v"),
             )
             st.plotly_chart(fig_sm, width='stretch')
@@ -588,7 +759,7 @@ with tabs[4]:
         fig_st.update_layout(
             xaxis_title="Underlying at Expiry",
             yaxis_title="P&L",
-            template="plotly_dark",
+            template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")),
             height=460,
             legend=dict(orientation="h", y=1.06),
         )
@@ -721,7 +892,7 @@ with tabs[5]:
             fig_cpn.add_vline(x=K_cpn, line_dash="dot", line_color="gold",
                                annotation_text=f"K={K_cpn:.0f}")
             fig_cpn.update_layout(xaxis_title="S at maturity", yaxis_title="Payoff",
-                                   template="plotly_dark", height=420,
+                                   template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420,
                                    legend=dict(orientation="h", y=1.06))
             st.plotly_chart(fig_cpn, width='stretch')
 
@@ -764,7 +935,7 @@ with tabs[5]:
             fig_rc.add_vline(x=S, line_dash="dot", line_color="white",
                               annotation_text=f"Spot={S}")
             fig_rc.update_layout(xaxis_title="S at maturity", yaxis_title="Payoff (% notional)",
-                                  template="plotly_dark", height=420,
+                                  template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420,
                                   legend=dict(orientation="h", y=1.06))
             st.plotly_chart(fig_rc, width='stretch')
 
@@ -810,7 +981,7 @@ with tabs[5]:
             fig_boost.add_vline(x=K_put_b, line_dash="dash", line_color="tomato", annotation_text=f"Put={K_put_b:.0f}")
             fig_boost.add_hline(y=0, line_color="gray", line_width=0.8)
             fig_boost.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
-                                     template="plotly_dark", height=420)
+                                     template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420)
             st.plotly_chart(fig_boost, width='stretch')
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -859,7 +1030,7 @@ with tabs[5]:
                               annotation_text=f"K={K_uo:.0f}")
             fig_uo.add_hline(y=0, line_color="gray", line_width=0.7)
             fig_uo.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
-                                  template="plotly_dark", height=420,
+                                  template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420,
                                   legend=dict(orientation="h", y=1.06))
             st.plotly_chart(fig_uo, width='stretch')
 
@@ -905,7 +1076,7 @@ with tabs[5]:
                               annotation_text=f"K={K_di:.0f}")
             fig_di.add_hline(y=0, line_color="gray", line_width=0.7)
             fig_di.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
-                                  template="plotly_dark", height=420,
+                                  template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420,
                                   legend=dict(orientation="h", y=1.06))
             st.plotly_chart(fig_di, width='stretch')
 
@@ -947,7 +1118,7 @@ with tabs[5]:
                                annotation_text=f"Spot={S}")
             fig_dig.add_hline(y=0, line_color="gray", line_width=0.7)
             fig_dig.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
-                                   template="plotly_dark", height=420,
+                                   template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420,
                                    legend=dict(orientation="h", y=1.06))
             st.plotly_chart(fig_dig, width='stretch')
 
@@ -1005,7 +1176,7 @@ with tabs[5]:
             fig_ra.update_layout(
                 xaxis_title="S at maturity", yaxis_title="Probability density",
                 title=f"Risk-neutral distribution of S_T (T={T:.1f}y)",
-                template="plotly_dark", height=420,
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420,
             )
             st.plotly_chart(fig_ra, width='stretch')
 
@@ -1050,7 +1221,7 @@ with tabs[5]:
                                annotation_text=f"Bonus={bonus:.0f}")
             fig_bon.add_hline(y=0, line_color="gray", line_width=0.7)
             fig_bon.update_layout(xaxis_title="S at maturity", yaxis_title="P&L",
-                                   template="plotly_dark", height=420,
+                                   template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=420,
                                    legend=dict(orientation="h", y=1.06))
             st.plotly_chart(fig_bon, width='stretch')
 
@@ -1130,7 +1301,7 @@ with tabs[5]:
                 ))
                 fig_ac.update_layout(title="P(called) by observation date",
                                      xaxis_title="Date", yaxis_title="Probability (%)",
-                                     template="plotly_dark", height=280, margin=dict(t=35))
+                                     template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=280, margin=dict(t=35))
                 st.plotly_chart(fig_ac, width='stretch')
 
                 fig_hist_ac = go.Figure()
@@ -1142,7 +1313,7 @@ with tabs[5]:
                 fig_hist_ac.add_vline(x=S, line_dash="dot", line_color="gold",
                                       annotation_text="Par")
                 fig_hist_ac.update_layout(xaxis_title="Discounted Payoff", yaxis_title="Density",
-                                          template="plotly_dark", height=260, margin=dict(t=10))
+                                          template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=260, margin=dict(t=10))
                 st.plotly_chart(fig_hist_ac, width='stretch')
             else:
                 st.info("Set parameters and click **Price Autocall**.")
@@ -1244,7 +1415,7 @@ with tabs[5]:
                 ))
                 fig_ph.update_layout(title="P(called) by quarterly observation",
                                      xaxis_title="Date", yaxis_title="Probability (%)",
-                                     template="plotly_dark", height=300, margin=dict(t=35))
+                                     template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=300, margin=dict(t=35))
                 st.plotly_chart(fig_ph, width='stretch')
 
                 fig_hist_ph = go.Figure()
@@ -1256,7 +1427,7 @@ with tabs[5]:
                 fig_hist_ph.add_vline(x=S, line_dash="dot", line_color="gold",
                                       annotation_text="Par")
                 fig_hist_ph.update_layout(xaxis_title="Discounted Payoff", yaxis_title="Density",
-                                          template="plotly_dark", height=260, margin=dict(t=10))
+                                          template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")), height=260, margin=dict(t=10))
                 st.plotly_chart(fig_hist_ph, width='stretch')
             else:
                 st.info("Set parameters and click **Price Phoenix**.")
