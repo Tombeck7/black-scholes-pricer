@@ -43,11 +43,12 @@ def sf(fig, title="", height=420, legend_h=True):
     """Apply consistent style to a Plotly figure."""
     fig.update_layout(
         title=dict(text=title, font=dict(size=13, color=C["text"]), x=0.01),
-        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color="#e2e8f0"), hoverlabel=dict(bgcolor="#1e293b", font=dict(color="#e2e8f0")),
+        template="plotly_dark",
         height=height,
         paper_bgcolor=C["bg"],
         plot_bgcolor=C["bg"],
         font=dict(family="Inter, system-ui, sans-serif", size=11, color=C["text"]),
+        hoverlabel=dict(bgcolor="#1e293b", bordercolor=C["line"], font=dict(size=11, color=C["text"])),
         margin=dict(t=45 if title else 20, b=36, l=52, r=16),
         legend=dict(
             bgcolor="rgba(0,0,0,0)", borderwidth=0,
