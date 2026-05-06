@@ -81,7 +81,7 @@ st.markdown("""
 
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-[data-testid="stSidebar"] > div:first-child { background: #0f172a !important; }
+
 
 div[data-testid="stMetricValue"]  { font-size: 1.5rem; font-weight: 700; }
 div[data-testid="stMetricLabel"]  { font-size: 0.75rem; color: #94a3b8; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
@@ -262,6 +262,81 @@ with tabs[0]:
         f"Forward F = S·e^(r-q)T = **{S * np.exp((r-q)*T):.4f}** | "
         f"PV(K) = K·e^(-rT) = **{K * np.exp(-r*T):.4f}**"
     )
+
+
+    # -- Market data panel ------------------------------------------------
+    if live:
+        st.divider()
+        st.subheader(f"📡 {live['ticker']} — Live Market Data")
+
+        # Row 1: key metrics
+        r1 = st.columns(6)
+        r1[0].metric('Price',      f"{live['price']:.2f} {live['currency']}",
+                     f"{live['change_pct']:+.2f}%")
+        r1[1].metric('Day range',  f"{live['low_day']:.2f} / {live['high_day']:.2f}")
+        r1[2].metric('52W range',  f"{live['low_52w']:.2f} / {live['high_52w']:.2f}")
+        r1[3].metric('HV 1M',      f"{live['sigma_1m']*100:.1f}%")
+        r1[4].metric('HV 3M',      f"{live['sigma_3m']*100:.1f}%")
+        r1[5].metric('HV 1Y',      f"{live['sigma_1y']*100:.1f}%")
+
+        # Row 2: IV + fundamentals
+        r2 = st.columns(6)
+        if live.get('iv_atm_near'):
+            r2[0].metric('IV ATM (near exp)', f"{live['iv_atm_near']*100:.1f}%",
+                         help=f"Expiry: {live['iv_chain'].get('exp_near','')}")
+        if live.get('iv_atm_far'):
+            r2[1].metric('IV ATM (far exp)',  f"{live['iv_atm_far']*100:.1f}%",
+                         help=f"Expiry: {live['iv_chain'].get('exp_far','')}")
+        if live.get('pe_ratio'):
+            r2[2].metric('P/E (trailing)', f"{live['pe_ratio']:.1f}x")
+        if live.get('fwd_pe'):
+            r2[3].metric('P/E (forward)',  f"{live['fwd_pe']:.1f}x")
+        if live.get('beta'):
+            r2[4].metric('Beta',           f"{live['beta']:.2f}")
+        if live.get('div_yield'):
+            r2[5].metric('Div yield',      f"{live['div_yield']*100:.2f}%")
+
+        # Row 3: analyst + sector
+        info_parts = []
+        if live.get('name')   != live['ticker']: info_parts.append(f"**{live['name']}**")
+        if live.get('sector'):   info_parts.append(live['sector'])
+        if live.get('industry'): info_parts.append(live['industry'])
+        if live.get('market_cap_str'): info_parts.append(f"Mkt cap: {live['market_cap_str']}")
+        if live.get('target_price'):   info_parts.append(f"Target: {live['target_price']:.2f}")
+        if live.get('analyst_rating'): info_parts.append(f"Analyst: {live['analyst_rating'].upper()}")
+        if info_parts:
+            st.caption('  ·  '.join(info_parts))
+
+        # Real IV smile chart
+        smile_near = live['iv_chain'].get('smile_near')
+        smile_far  = live['iv_chain'].get('smile_far')
+        if smile_near is not None and len(smile_near) > 3:
+            st.subheader('📉 Real Implied Volatility Smile (from option chain)')
+            fig_smile = go.Figure()
+            fig_smile.add_trace(go.Scatter(
+                x=smile_near['strike'], y=smile_near['mid_iv']*100,
+                mode='lines+markers', name=f"IV {live['iv_chain'].get('exp_near','near')}",
+                line=dict(color='#6366f1', width=2), marker=dict(size=5),
+            ))
+            if smile_far is not None and len(smile_far) > 3:
+                fig_smile.add_trace(go.Scatter(
+                    x=smile_far['strike'], y=smile_far['mid_iv']*100,
+                    mode='lines+markers', name=f"IV {live['iv_chain'].get('exp_far','far')}",
+                    line=dict(color='#f59e0b', width=2, dash='dot'), marker=dict(size=5),
+                ))
+            fig_smile.add_vline(x=live['price'], line_dash='dash', line_color='#ef4444',
+                                annotation_text='Spot')
+            fig_smile.update_layout(
+                template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)', height=320,
+                font=dict(family='Inter, sans-serif', color='#e2e8f0'),
+                xaxis_title='Strike', yaxis_title='IV (%)',
+                margin=dict(t=20,b=40,l=52,r=16),
+                legend=dict(orientation='h', y=1.05, bgcolor='rgba(0,0,0,0)'),
+            )
+            fig_smile.update_xaxes(gridcolor='rgba(255,255,255,0.06)')
+            fig_smile.update_yaxes(gridcolor='rgba(255,255,255,0.06)')
+            st.plotly_chart(fig_smile, width='stretch')
 
     # -- Live price chart -------------------------------------------------
     if live and 'hist' in live:
