@@ -5,3 +5,4 @@ streamlit>=1.32
 plotly>=5.18
 pandas>=2.0
 yfinance>=0.2
+fpdf2>=2.7

@@ -22,6 +22,7 @@ from payoff_analysis import (
     preexpiry_pnl_straddle, straddle_breakevens,
 )
 from live_data import fetch, risk_free_rate
+from pdf_export import generate_bs_pdf
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 C = dict(
@@ -253,6 +254,27 @@ with tabs[0]:
     c2.metric("d2",          f"{d2v:.6f}")
     c3.metric("Moneyness S/K", f"{S/K:.4f}")
     c4.metric("log(S/K)",    f"{np.log(S/K):.4f}")
+
+    # -- Export PDF button --------------------------------------------------
+    st.divider()
+    ec1, ec2 = st.columns([1, 3])
+    if ec1.button("Export PDF Term Sheet", type="primary", key="export_bs"):
+        with st.spinner("Generating PDF..."):
+            try:
+                pdf_bytes = generate_bs_pdf(
+                    S, K, T, r, sigma, q,
+                    call.greeks_summary(), put.greeks_summary(),
+                    ticker=st.session_state.live["ticker"] if st.session_state.live else "",
+                )
+                ec2.download_button(
+                    label="Download Term Sheet PDF",
+                    data=pdf_bytes,
+                    file_name=f"bs_termsheet_{K:.0f}K_{T:.1f}Y.pdf",
+                    mime="application/pdf",
+                    key="dl_bs",
+                )
+            except Exception as ex:
+                st.error(f"PDF error: {ex}")
 
     st.caption(
         f"Forward F = S·e^(r-q)T = **{S * np.exp((r-q)*T):.4f}** | "
