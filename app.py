@@ -56,10 +56,6 @@ def sf(fig, title="", height=420, legend_h=True):
             y=1.06 if legend_h else 1,
             font=dict(size=10),
         ),
-        hoverlabel=dict(
-            bgcolor="#1e293b", bordercolor=C["line"],
-            font=dict(size=11, color=C["text"]),
-        ),
     )
     fig.update_xaxes(
         gridcolor=C["grid"], linecolor=C["line"],
@@ -85,7 +81,7 @@ st.markdown("""
 
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-[data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
+[data-testid="stSidebar"] > div:first-child { background: #0f172a !important; }
 
 div[data-testid="stMetricValue"]  { font-size: 1.5rem; font-weight: 700; }
 div[data-testid="stMetricLabel"]  { font-size: 0.75rem; color: #94a3b8; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
