@@ -175,6 +175,59 @@ def calc_hist_vols(hist: pd.DataFrame):
     rolling_30 = log_ret.rolling(30).std() * np.sqrt(252) * 100
     return log_ret, rolling_30, vols
 
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_option_surface(ticker: str, max_expiries: int = 8):
+    """Load Yahoo option-chain IVs and return a clean surface dataframe."""
+    ticker = ticker.upper().strip()
+    if not ticker:
+        raise ValueError("Ticker is empty.")
+
+    tk = yf.Ticker(ticker)
+    hist = tk.history(period="5d")
+    if hist is None or hist.empty:
+        raise ValueError(f"No recent price found for {ticker}.")
+
+    spot = float(hist["Close"].dropna().iloc[-1])
+    expiries = list(tk.options or [])[:max_expiries]
+    if not expiries:
+        raise ValueError(f"No listed option expiries found for {ticker}.")
+
+    rows = []
+    today = pd.Timestamp.today().normalize()
+    for expiry in expiries:
+        try:
+            chain = tk.option_chain(expiry)
+        except Exception:
+            continue
+
+        expiry_ts = pd.Timestamp(expiry)
+        dte = max((expiry_ts - today).days, 1)
+        for opt_type, df in (("Call", chain.calls), ("Put", chain.puts)):
+            if df is None or df.empty:
+                continue
+            cols = ["strike", "impliedVolatility", "volume", "openInterest"]
+            tmp = df[[c for c in cols if c in df.columns]].copy()
+            tmp = tmp.rename(columns={"impliedVolatility": "iv"})
+            tmp["type"] = opt_type
+            tmp["expiry"] = expiry
+            tmp["dte"] = dte
+            tmp["maturity"] = dte / 365.0
+            rows.append(tmp)
+
+    if not rows:
+        raise ValueError(f"Yahoo returned no usable option chain for {ticker}.")
+
+    surface = pd.concat(rows, ignore_index=True)
+    surface = surface.dropna(subset=["strike", "iv"])
+    surface = surface[(surface["iv"] > 0.01) & (surface["iv"] < 5.0)]
+    surface = surface[(surface["strike"] > spot * 0.45) & (surface["strike"] < spot * 1.75)]
+    if surface.empty:
+        raise ValueError(f"Option chain for {ticker} is empty after cleaning.")
+
+    surface["moneyness"] = surface["strike"] / spot
+    surface["iv_pct"] = surface["iv"] * 100
+    return surface, spot, expiries
+
 # ── PLOTLY THEME ──────────────────────────────────────────────────────────────
 BASE_LAYOUT = dict(
     template="plotly_white",
@@ -1007,8 +1060,106 @@ with tabs[7]:
     st.markdown('<div style="padding:32px 40px;">', unsafe_allow_html=True)
     st.markdown("""
     <div style="font-size:24px;font-weight:800;color:#0f172a;">Market Sensitivities</div>
-    <div style="font-size:14px;color:#64748b;margin-bottom:24px;">Option price and Greeks across all key parameters</div>
+    <div style="font-size:14px;color:#64748b;margin-bottom:24px;">Live volatility surface, macro scenarios and option sensitivity charts</div>
     """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="background:white;border-radius:12px;padding:24px 28px;margin-bottom:24px;
+    box-shadow:0 1px 4px rgba(0,0,0,0.06),0 6px 18px rgba(15,35,63,0.05);">
+      <div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px;">Live Volatility Surface</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:16px;">
+        Yahoo option-chain implied volatility by strike and maturity. Works best on liquid US tickers such as AAPL, MSFT, NVDA, SPY.
+      </div>
+    """, unsafe_allow_html=True)
+
+    vs_c1, vs_c2, vs_c3 = st.columns([1.4, 1, 1])
+    with vs_c1:
+        surface_ticker = st.text_input(
+            "Surface ticker",
+            value=st.session_state.get("bs_ticker") or "AAPL",
+            key="surface_ticker",
+        )
+    with vs_c2:
+        max_exp = st.slider("Expiries", 3, 12, 8, 1, key="surface_expiries")
+    with vs_c3:
+        opt_side = st.selectbox("Chain side", ["Call", "Put", "Both"], key="surface_side")
+
+    if st.button("Load Vol Surface", type="primary", use_container_width=True):
+        st.session_state["surface_loaded"] = True
+
+    if st.session_state.get("surface_loaded"):
+        try:
+            surface_df, surface_spot, expiries = fetch_option_surface(surface_ticker, max_exp)
+            plot_df = surface_df if opt_side == "Both" else surface_df[surface_df["type"] == opt_side]
+            if plot_df.empty:
+                raise ValueError("No option rows for this side after cleaning.")
+
+            atm_df = plot_df[(plot_df["moneyness"] >= 0.75) & (plot_df["moneyness"] <= 1.25)].copy()
+            smile_df = atm_df.sort_values(["dte", "strike"])
+
+            sm1, sm2, sm3 = st.columns(3)
+            with sm1:
+                metric_card("Spot", f"{surface_spot:,.2f}", "#3b82f6")
+            with sm2:
+                metric_card("Expiries loaded", str(len(sorted(plot_df["expiry"].unique()))), "#22c55e")
+            with sm3:
+                metric_card("IV points", f"{len(plot_df):,}", "#f97316")
+
+            fig_smile = go.Figure()
+            for expiry in sorted(smile_df["expiry"].unique())[:8]:
+                sub = smile_df[smile_df["expiry"] == expiry]
+                fig_smile.add_trace(go.Scatter(
+                    x=sub["moneyness"], y=sub["iv_pct"], mode="lines+markers",
+                    name=f"{expiry}", line=dict(width=2)
+                ))
+            fig_style(fig_smile, f"{surface_ticker.upper()} IV Smile / Skew")
+            fig_smile.update_xaxes(title="Moneyness K / Spot")
+            fig_smile.update_yaxes(title="Implied Volatility (%)")
+            fig_smile.add_vline(x=1.0, line_dash="dash", line_color="#0f172a", annotation_text="ATM")
+            st.plotly_chart(fig_smile, use_container_width=True)
+
+            grid = (
+                plot_df.assign(moneyness_bucket=(plot_df["moneyness"] * 100).round() / 100)
+                .groupby(["dte", "moneyness_bucket"], as_index=False)["iv_pct"].mean()
+            )
+            pivot = grid.pivot(index="dte", columns="moneyness_bucket", values="iv_pct").sort_index()
+
+            surf_l, surf_r = st.columns(2)
+            with surf_l:
+                fig_surface = go.Figure(data=[go.Surface(
+                    x=pivot.columns.values,
+                    y=pivot.index.values,
+                    z=pivot.values,
+                    colorscale="Blues",
+                    colorbar=dict(title="IV %"),
+                )])
+                fig_surface.update_layout(
+                    **BASE_LAYOUT,
+                    height=520,
+                    title=dict(text="3D IV Surface", font=dict(size=14, color="#0f172a")),
+                    scene=dict(
+                        xaxis_title="Moneyness",
+                        yaxis_title="Days to Expiry",
+                        zaxis_title="IV %",
+                    ),
+                )
+                st.plotly_chart(fig_surface, use_container_width=True)
+            with surf_r:
+                fig_heat = go.Figure(data=go.Heatmap(
+                    x=pivot.columns.values,
+                    y=pivot.index.values,
+                    z=pivot.values,
+                    colorscale="Blues",
+                    colorbar=dict(title="IV %"),
+                ))
+                fig_style(fig_heat, "IV Heatmap")
+                fig_heat.update_xaxes(title="Moneyness")
+                fig_heat.update_yaxes(title="Days to Expiry")
+                st.plotly_chart(fig_heat, use_container_width=True)
+        except Exception as err:
+            st.error(f"Vol surface unavailable for {surface_ticker.upper()}: {err}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     cm,cr=st.columns([1,3],gap="large")
     with cm:
@@ -1020,7 +1171,69 @@ with tabs[7]:
         r_m  =st.number_input("Rate (%)",  value=3.0, step=0.1, key="ms_r") / 100
         q_m  =st.number_input("Div. Yield (%)", value=0.0, min_value=0.0, step=0.1, key="ms_q") / 100
 
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+        st.markdown("**Macro Scenario Shocks**")
+        bull_spot = st.number_input("Bull spot shock (%)", value=12.0, step=1.0, key="macro_bull_spot") / 100
+        bear_spot = st.number_input("Bear spot shock (%)", value=-12.0, step=1.0, key="macro_bear_spot") / 100
+        bull_vol = st.number_input("Bull vol shock (pts)", value=-3.0, step=0.5, key="macro_bull_vol") / 100
+        bear_vol = st.number_input("Bear vol shock (pts)", value=8.0, step=0.5, key="macro_bear_vol") / 100
+        rate_shock = st.number_input("Rate shock (pts)", value=0.5, step=0.1, key="macro_rate_shock") / 100
+
     with cr:
+        scen_rows = []
+        base_price = bs_price(S_m, K_m, T_m, sig_m, r_m, q_m, ot_m)
+        scenarios = [
+            ("Bull", S_m * (1 + bull_spot), max(sig_m + bull_vol, 0.001), r_m + rate_shock, "#22c55e"),
+            ("Base", S_m, sig_m, r_m, "#3b82f6"),
+            ("Bear", S_m * (1 + bear_spot), max(sig_m + bear_vol, 0.001), r_m - rate_shock, "#ef4444"),
+        ]
+        for name, s_sc, v_sc, r_sc, color in scenarios:
+            price_sc = bs_price(s_sc, K_m, T_m, v_sc, r_sc, q_m, ot_m)
+            greeks_sc = bs_greeks(s_sc, K_m, T_m, v_sc, r_sc, q_m, ot_m)
+            scen_rows.append({
+                "Scenario": name,
+                "Spot": s_sc,
+                "Vol (%)": v_sc * 100,
+                "Rate (%)": r_sc * 100,
+                "Price": price_sc,
+                "vs Base": price_sc - base_price,
+                "Delta": greeks_sc["Delta"],
+                "Vega": greeks_sc["Vega"],
+            })
+        scen_df = pd.DataFrame(scen_rows)
+
+        st.markdown("""
+        <div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px;">Bull / Base / Bear Macro Scenarios</div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:12px;">Compare the selected option price under spot, volatility and rate assumptions.</div>
+        """, unsafe_allow_html=True)
+        sleft, sright = st.columns([1.1, 1])
+        with sleft:
+            st.dataframe(
+                scen_df.style.format({
+                    "Spot": "{:,.2f}",
+                    "Vol (%)": "{:.2f}",
+                    "Rate (%)": "{:.2f}",
+                    "Price": "{:,.4f}",
+                    "vs Base": "{:+,.4f}",
+                    "Delta": "{:+.4f}",
+                    "Vega": "{:.4f}",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+        with sright:
+            fig_macro = go.Figure()
+            fig_macro.add_trace(go.Bar(
+                x=scen_df["Scenario"], y=scen_df["Price"], name="Option Price",
+                marker_color=["#22c55e", "#3b82f6", "#ef4444"],
+                text=[f"{v:.2f}" for v in scen_df["Price"]],
+                textposition="outside",
+            ))
+            fig_style(fig_macro, f"{ot_m} Price by Macro Scenario")
+            fig_macro.update_yaxes(title="Option Price")
+            st.plotly_chart(fig_macro, use_container_width=True)
+
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
         tv,ts,tt,tr,tg=st.tabs(["Price vs Vol","Price vs Spot","Price vs Time","Price vs Rate","Greeks vs Spot"])
         with tv:
             vols=np.linspace(0.01,1.0,300)
