@@ -228,6 +228,45 @@ def fetch_option_surface(ticker: str, max_expiries: int = 8):
     surface["iv_pct"] = surface["iv"] * 100
     return surface, spot, expiries
 
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_estimated_surface(ticker: str, max_expiries: int = 8):
+    """Fallback surface from historical vol when listed option IV is unavailable."""
+    hist, minfo = fetch_market_data(ticker)
+    log_ret, _, hvols = calc_hist_vols(hist)
+
+    spot = float(minfo["price"])
+    base_vol = hvols.get("30d") or hvols.get("60d") or hvols.get("90d") or hvols.get("252d")
+    if not base_vol:
+        base_vol = float(log_ret.std() * np.sqrt(252) * 100)
+    base_vol = max(base_vol / 100, 0.05)
+
+    dtes = np.array([30, 60, 90, 180, 270, 365, 540, 730])[:max_expiries]
+    moneyness_grid = np.linspace(0.7, 1.3, 25)
+    rows = []
+    today = pd.Timestamp.today().normalize()
+    for dte in dtes:
+        term_adj = 0.015 * np.exp(-dte / 365)
+        for m in moneyness_grid:
+            skew = -0.10 * np.log(m)
+            convexity = 0.18 * (np.log(m) ** 2)
+            iv = max(base_vol + term_adj + skew + convexity, 0.01)
+            expiry = (today + pd.Timedelta(days=int(dte))).date().isoformat()
+            for opt_type in ("Call", "Put"):
+                rows.append({
+                    "strike": spot * m,
+                    "iv": iv,
+                    "volume": np.nan,
+                    "openInterest": np.nan,
+                    "type": opt_type,
+                    "expiry": expiry,
+                    "dte": int(dte),
+                    "maturity": dte / 365,
+                    "moneyness": m,
+                    "iv_pct": iv * 100,
+                })
+
+    return pd.DataFrame(rows), spot, [r["expiry"] for r in rows[::len(moneyness_grid) * 2]]
+
 # ── PLOTLY THEME ──────────────────────────────────────────────────────────────
 BASE_LAYOUT = dict(
     template="plotly_white",
@@ -1089,13 +1128,26 @@ with tabs[7]:
 
     if st.session_state.get("surface_loaded"):
         try:
-            surface_df, surface_spot, expiries = fetch_option_surface(surface_ticker, max_exp)
+            source_label = "Yahoo option chain"
+            try:
+                surface_df, surface_spot, expiries = fetch_option_surface(surface_ticker, max_exp)
+            except Exception as yahoo_err:
+                surface_df, surface_spot, expiries = fetch_estimated_surface(surface_ticker, max_exp)
+                source_label = f"Estimated from historical volatility (Yahoo IV unavailable: {yahoo_err})"
+
             plot_df = surface_df if opt_side == "Both" else surface_df[surface_df["type"] == opt_side]
             if plot_df.empty:
                 raise ValueError("No option rows for this side after cleaning.")
 
             atm_df = plot_df[(plot_df["moneyness"] >= 0.75) & (plot_df["moneyness"] <= 1.25)].copy()
             smile_df = atm_df.sort_values(["dte", "strike"])
+
+            st.markdown(f"""
+            <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;
+            padding:12px 16px;margin:12px 0 16px 0;font-size:13px;color:#1e40af;">
+              <strong>Surface source:</strong> {source_label}
+            </div>
+            """, unsafe_allow_html=True)
 
             sm1, sm2, sm3 = st.columns(3)
             with sm1:
