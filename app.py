@@ -73,6 +73,27 @@ div[data-testid="stPlotlyChart"] {
     border-radius: 10px !important;
 }
 
+.pro-card {
+    background: #ffffff;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 10px 28px rgba(15, 35, 63, 0.06);
+}
+
+.section-title {
+    color: #0f172a;
+    font-size: 22px;
+    font-weight: 800;
+    margin: 0 0 6px 0;
+}
+
+.section-subtitle {
+    color: #64748b;
+    font-size: 13px;
+    line-height: 1.6;
+    margin-bottom: 18px;
+}
+
 /* ── Inputs ── */
 .stNumberInput label, .stSelectbox label, .stTextInput label, .stToggle label {
     font-size: 13px !important; font-weight: 600 !important; color: #374151 !important;
@@ -174,6 +195,51 @@ def calc_hist_vols(hist: pd.DataFrame):
         vols[f"{w}d"] = float(tail.std() * np.sqrt(252) * 100) if len(tail) >= 5 else None
     rolling_30 = log_ret.rolling(30).std() * np.sqrt(252) * 100
     return log_ret, rolling_30, vols
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_market_snapshot():
+    """Fetch a compact cross-asset snapshot for the dashboard overview."""
+    instruments = [
+        ("S&P 500", "^GSPC", "Index"),
+        ("Nasdaq 100", "^NDX", "Index"),
+        ("CAC 40", "^FCHI", "Index"),
+        ("VIX", "^VIX", "Vol"),
+        ("US 10Y", "^TNX", "Rate"),
+        ("US 3M", "^IRX", "Rate"),
+        ("EUR/USD", "EURUSD=X", "FX"),
+        ("BTC/USD", "BTC-USD", "Crypto"),
+    ]
+    rows = []
+    for name, ticker, bucket in instruments:
+        try:
+            hist = yf.Ticker(ticker).history(period="7d")
+            if hist is None or hist.empty or len(hist["Close"].dropna()) < 2:
+                raise ValueError("empty history")
+            close = hist["Close"].dropna()
+            last = float(close.iloc[-1])
+            prev = float(close.iloc[-2])
+            change = last - prev
+            change_pct = (change / prev * 100) if prev else 0.0
+            rows.append({
+                "Name": name,
+                "Ticker": ticker,
+                "Asset Class": bucket,
+                "Last": last,
+                "Change": change,
+                "Change %": change_pct,
+                "Status": "Live",
+            })
+        except Exception:
+            rows.append({
+                "Name": name,
+                "Ticker": ticker,
+                "Asset Class": bucket,
+                "Last": np.nan,
+                "Change": np.nan,
+                "Change %": np.nan,
+                "Status": "Unavailable",
+            })
+    return pd.DataFrame(rows)
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_option_surface(ticker: str, max_expiries: int = 8):
@@ -296,6 +362,32 @@ def metric_card(label, value, color="#0f172a"):
       <div style="font-size:22px;font-weight:800;color:{color};">{value}</div>
     </div>""", unsafe_allow_html=True)
 
+def market_snapshot_card(row):
+    name = row["Name"]
+    ticker = row["Ticker"]
+    status = row["Status"]
+    if status != "Live" or pd.isna(row["Last"]):
+        value = "N/A"
+        change = "No data"
+        color = "#94a3b8"
+    else:
+        value = f"{row['Last']:,.2f}"
+        change = f"{row['Change %']:+.2f}%"
+        color = "#22c55e" if row["Change %"] >= 0 else "#ef4444"
+    st.markdown(f"""
+    <div class="pro-card" style="padding:18px 18px;min-height:118px;">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+        <div>
+          <div style="font-size:12px;font-weight:800;color:#0f172a;margin-bottom:4px;">{name}</div>
+          <div style="font-size:10px;color:#94a3b8;font-weight:800;letter-spacing:.9px;text-transform:uppercase;">{ticker}</div>
+        </div>
+        <div style="font-size:10px;color:#64748b;background:#f1f5f9;border-radius:999px;padding:4px 8px;font-weight:700;">{row['Asset Class']}</div>
+      </div>
+      <div style="font-size:24px;font-weight:800;color:#0f172a;margin-top:16px;line-height:1;">{value}</div>
+      <div style="font-size:12px;font-weight:800;color:{color};margin-top:8px;">{change}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
 def info_box(text):
     st.markdown(f"""
     <div style="background:#eff6ff;border-left:4px solid #3b82f6;border-radius:6px;
@@ -389,6 +481,36 @@ with tabs[0]:
               <div style="font-size:14px;font-weight:800;color:{color};margin-bottom:8px;">{title}</div>
               <div style="font-size:13px;color:#64748b;line-height:1.5;">{desc}</div>
             </div>""", unsafe_allow_html=True)
+
+    st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div class="section-title">Market Snapshot</div>
+    <div class="section-subtitle">
+      Cross-asset view used by desks before pricing: indices, volatility, rates, FX and crypto.
+      Values are pulled with yfinance and refresh automatically.
+    </div>
+    """, unsafe_allow_html=True)
+    snap = fetch_market_snapshot()
+    snap_cols = st.columns(4)
+    for i, row in snap.iterrows():
+        with snap_cols[i % 4]:
+            market_snapshot_card(row)
+
+    valid_snap = snap.dropna(subset=["Change %"]).copy()
+    if not valid_snap.empty:
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+        fig_snap = go.Figure()
+        fig_snap.add_trace(go.Bar(
+            x=valid_snap["Name"],
+            y=valid_snap["Change %"],
+            marker_color=["#22c55e" if v >= 0 else "#ef4444" for v in valid_snap["Change %"]],
+            text=[f"{v:+.2f}%" for v in valid_snap["Change %"]],
+            textposition="outside",
+        ))
+        fig_style(fig_snap, "Daily Cross-Asset Move (%)")
+        fig_snap.update_yaxes(title="Change (%)", zeroline=True, zerolinecolor="#94a3b8")
+        fig_snap.update_xaxes(title="")
+        st.plotly_chart(fig_snap, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 with tabs[1]:
@@ -1351,55 +1473,124 @@ with tabs[7]:
 with tabs[8]:
     st.markdown('<div style="padding:32px 40px;">', unsafe_allow_html=True)
     st.markdown("""
-    <div style="font-size:24px;font-weight:800;color:#0f172a;">Key Learnings</div>
-    <div style="font-size:14px;color:#64748b;margin-bottom:28px;">From quantitative models to structured finance practice</div>
+    <div style="background:linear-gradient(135deg,#0b1b2a 0%,#12345a 58%,#0e566f 100%);
+    border-radius:16px;padding:46px 48px;margin-bottom:26px;color:white;box-shadow:0 18px 45px rgba(16,35,63,0.18);">
+      <div style="font-size:10px;color:rgba(255,255,255,0.48);letter-spacing:2.6px;font-weight:800;text-transform:uppercase;margin-bottom:14px;">
+        PRESENTATION MODE
+      </div>
+      <div style="font-size:38px;font-weight:800;line-height:1.12;margin-bottom:16px;">Structured Products<br>&amp; Options Dashboard</div>
+      <div style="font-size:15px;color:rgba(255,255,255,0.74);line-height:1.75;max-width:820px;">
+        A compact quantitative finance project covering vanilla option pricing, Greeks, volatility surfaces,
+        strategy payoffs, Monte Carlo structured products and market scenario analysis.
+      </div>
+    </div>
     """, unsafe_allow_html=True)
 
-    cards_l=[
-        ("#3b82f6","Replication & No-Arbitrage",[
-            "BS replication links Itô calculus to a concrete self-financing portfolio (Δ·S − B)",
-            "Drift cancels under ℚ — only realized vs implied vol drives Gamma P&L",
-            "Model limits (constant vol, no jumps) motivate local vol and SABR in production"]),
-        ("#22c55e","Structured Product Architecture",[
-            "Autocall = conditional digitals + short PDI put. Coupon = premium from selling barrier",
-            "BRC = zero-coupon bond + short KI put. KI put premium = client coupon",
-            "Issuers hedge via OTC vanilla puts — their flow systematically impacts the skew"]),
-        ("#8b5cf6","Greeks as Risk Language",[
-            "Delta = hedge ratio, not a probability. N(d₂) is the risk-neutral ITM probability",
-            "Gamma and Theta are linked: long convexity = paying daily time decay",
-            "Vega in structured products: BRC/Autocall issuers are structurally short Vega across the surface"]),
-        ("#f97316","Desk Relevance",[
-            "Structuring: decompose payoffs into option building blocks, price from vol surface",
-            "Sales Trading: translate Greeks and scenarios into client-facing language in real-time",
-            "Pricing Support: Monte Carlo for path-dependent products, scenario analysis for risk reporting"]),
+    k1, k2, k3, k4 = st.columns(4)
+    top_cards = [
+        (k1, "Objective", "Build a desk-style pricing and risk dashboard", "#3b82f6"),
+        (k2, "Models", "Black-Scholes, Greeks, Monte Carlo, IV surfaces", "#22c55e"),
+        (k3, "Products", "Vanilla options, strategies, Autocall, BRC", "#f97316"),
+        (k4, "Market Data", "Yahoo prices, historical vol and option chains", "#8b5cf6"),
     ]
-    c1,c2=st.columns(2,gap="large")
-    for i,(color,title,bullets) in enumerate(cards_l):
-        tgt=c1 if i%2==0 else c2
-        with tgt:
-            items="".join([f'<li style="margin-bottom:8px;color:#374151;line-height:1.55;">{b}</li>' for b in bullets])
+    for col, title, desc, color in top_cards:
+        with col:
             st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:24px 28px;
-            box-shadow:0 1px 4px rgba(0,0,0,0.06),0 4px 16px rgba(0,0,0,0.04);
-            border-top:4px solid {color};margin-bottom:20px;">
-              <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:14px;">{title}</div>
-              <ul style="margin:0;padding-left:18px;list-style-type:disc;">{items}</ul>
-            </div>""", unsafe_allow_html=True)
+            <div class="pro-card" style="padding:22px 20px;min-height:126px;border-top:4px solid {color};">
+              <div style="font-size:12px;font-weight:800;color:{color};letter-spacing:.7px;text-transform:uppercase;margin-bottom:12px;">{title}</div>
+              <div style="font-size:15px;font-weight:700;color:#0f172a;line-height:1.45;">{desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
+    st.markdown("<div style='height:26px;'></div>", unsafe_allow_html=True)
+    c_left, c_right = st.columns([1.1, 1], gap="large")
+    with c_left:
+        st.markdown("""
+        <div class="pro-card" style="padding:28px 30px;">
+          <div class="section-title">Project Objectives</div>
+          <div class="section-subtitle">What the application is designed to demonstrate.</div>
+          <ol style="margin:0;padding-left:20px;color:#334155;line-height:1.72;font-size:14px;">
+            <li>Price European options with continuous dividends using Black-Scholes.</li>
+            <li>Translate model outputs into risk language: Delta, Gamma, Vega, Theta and Rho.</li>
+            <li>Compare payoff profiles for common option strategies.</li>
+            <li>Price simplified structured products using Monte Carlo simulations.</li>
+            <li>Connect pricing to live market inputs: spot, historical volatility and listed IV.</li>
+          </ol>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_right:
+        st.markdown("""
+        <div class="pro-card" style="padding:28px 30px;">
+          <div class="section-title">Model Stack</div>
+          <div class="section-subtitle">Core quantitative tools implemented in the app.</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div style="background:#eff6ff;border-radius:10px;padding:14px;"><strong style="color:#1d4ed8;">Black-Scholes</strong><br><span style="color:#64748b;font-size:13px;">Closed-form vanilla pricing</span></div>
+            <div style="background:#f0fdf4;border-radius:10px;padding:14px;"><strong style="color:#15803d;">Greeks</strong><br><span style="color:#64748b;font-size:13px;">Local risk sensitivities</span></div>
+            <div style="background:#fff7ed;border-radius:10px;padding:14px;"><strong style="color:#c2410c;">Monte Carlo</strong><br><span style="color:#64748b;font-size:13px;">Path-dependent products</span></div>
+            <div style="background:#f5f3ff;border-radius:10px;padding:14px;"><strong style="color:#6d28d9;">Vol Surface</strong><br><span style="color:#64748b;font-size:13px;">Smile, skew, term structure</span></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+    a, b, c = st.columns(3, gap="large")
+    blocks = [
+        (a, "Assumptions", "#3b82f6", [
+            "Lognormal GBM dynamics under risk-neutral measure.",
+            "Continuous rates and dividends for Black-Scholes pricing.",
+            "Constant volatility for closed-form pricing unless a surface is used.",
+            "Simplified autocall/BRC mechanics for educational transparency.",
+        ]),
+        (b, "Limitations", "#ef4444", [
+            "No transaction costs, funding spreads or bid/ask modelling.",
+            "Yahoo option chains can be incomplete for illiquid tickers.",
+            "Barrier products are simplified and not production-grade term sheets.",
+            "No stochastic rates, jumps, local volatility or counterparty credit adjustment.",
+        ]),
+        (c, "Desk Relevance", "#22c55e", [
+            "Fast translation from market inputs to price and risk.",
+            "Scenario analysis for client discussions and risk reporting.",
+            "Product decomposition into option building blocks.",
+            "Clean visual framework for sales, structuring and pricing support.",
+        ]),
+    ]
+    for col, title, color, bullets in blocks:
+        with col:
+            items = ''.join([f'<li style="margin-bottom:10px;color:#334155;line-height:1.55;">{x}</li>' for x in bullets])
+            st.markdown(f"""
+            <div class="pro-card" style="padding:24px 24px;min-height:304px;border-top:4px solid {color};">
+              <div style="font-size:17px;font-weight:800;color:#0f172a;margin-bottom:14px;">{title}</div>
+              <ul style="margin:0;padding-left:18px;font-size:14px;">{items}</ul>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
     st.markdown("""
-    <div style="background:#0d1b2a;border-radius:16px;padding:40px 48px;text-align:center;margin-top:8px;">
-      <div style="font-size:20px;font-weight:700;color:white;margin-bottom:12px;">
-        Looking for a Market Finance Internship</div>
-      <div style="font-size:14px;color:rgba(255,255,255,0.6);line-height:1.7;max-width:600px;margin:0 auto 20px auto;">
-        This project is part of my preparation for a market finance internship in
-        <strong style="color:white;">Sales, Structuring, Trading Support or Pricing</strong>.</div>
+    <div class="pro-card" style="padding:30px 34px;">
+      <div class="section-title">Conclusion</div>
+      <div class="section-subtitle">How to read the project as a market finance deliverable.</div>
+      <div style="font-size:15px;color:#334155;line-height:1.75;max-width:1100px;">
+        The application demonstrates the full workflow of a junior market finance tool: retrieve market data,
+        estimate volatility, price instruments, explain Greeks, stress market scenarios, and communicate product
+        risks visually. It is intentionally transparent rather than black-box: formulas, assumptions and model limits
+        are visible so the dashboard can be used both as a pricing tool and as a presentation support.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="background:#0b1b2a;border-radius:16px;padding:34px 42px;text-align:center;">
+      <div style="font-size:20px;font-weight:800;color:white;margin-bottom:10px;">Technical Stack</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.65);margin-bottom:18px;">Python quantitative stack with an interactive Streamlit front-end.</div>
       <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;">
-        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);border-radius:20px;padding:5px 16px;font-size:13px;font-weight:600;">Python</span>
-        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);border-radius:20px;padding:5px 16px;font-size:13px;font-weight:600;">NumPy · Pandas · SciPy</span>
-        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);border-radius:20px;padding:5px 16px;font-size:13px;font-weight:600;">Streamlit</span>
-        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);border-radius:20px;padding:5px 16px;font-size:13px;font-weight:600;">Plotly</span>
-        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);border-radius:20px;padding:5px 16px;font-size:13px;font-weight:600;">yfinance</span>
-        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);border-radius:20px;padding:5px 16px;font-size:13px;font-weight:600;">Monte Carlo</span>
+        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.9);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:700;">Python</span>
+        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.9);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:700;">NumPy</span>
+        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.9);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:700;">Pandas</span>
+        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.9);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:700;">SciPy</span>
+        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.9);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:700;">Plotly</span>
+        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.9);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:700;">Streamlit</span>
+        <span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.9);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:700;">yfinance</span>
       </div>
     </div>
     """, unsafe_allow_html=True)
