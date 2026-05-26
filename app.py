@@ -144,6 +144,21 @@ def bs_greeks(S, K, T, sigma, r, q=0.0, otype="Call"):
         rho   = -K*T*np.exp(-r*T)*norm.cdf(-d2)/100
     return {"Delta":delta,"Gamma":gamma,"Vega":vega,"Theta":theta,"Rho":rho}
 
+def display_unit(ticker: str, currency: str | None = None) -> str:
+    """Human-friendly unit for prices shown in the UI."""
+    ticker = (ticker or "").upper().strip()
+    if ticker.startswith("^"):
+        return "pts"
+    if ticker.endswith("=X"):
+        return ""
+    if ticker in {"BTC-USD", "ETH-USD"}:
+        return "USD"
+    return currency or ""
+
+def format_market_value(value: float, ticker: str, currency: str | None = None) -> str:
+    unit = display_unit(ticker, currency)
+    return f"{value:,.2f} {unit}".strip()
+
 # ── YFINANCE FUNCTIONS ────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -184,6 +199,8 @@ def fetch_market_data(ticker: str):
         "high_52w": float(data.get("high_52w") or hist["High"].max()),
         "low_52w": float(data.get("low_52w") or hist["Low"].min()),
         "currency": data.get("currency") or "USD",
+        "ticker": ticker,
+        "unit": display_unit(ticker, data.get("currency") or "USD"),
     }
 
 def calc_hist_vols(hist: pd.DataFrame):
@@ -371,7 +388,7 @@ def market_snapshot_card(row):
         change = "No data"
         color = "#94a3b8"
     else:
-        value = f"{row['Last']:,.2f}"
+        value = format_market_value(row["Last"], ticker)
         change = f"{row['Change %']:+.2f}%"
         color = "#22c55e" if row["Change %"] >= 0 else "#ef4444"
     st.markdown(f"""
@@ -573,6 +590,8 @@ with tabs[1]:
             chg_sign  = "+" if pct_chg >= 0 else ""
             vol_30    = hvols["30d"] or 20.0
             ccy       = minfo["currency"]
+            unit      = minfo.get("unit") or display_unit(ticker_to_use, ccy)
+            price_label = format_market_value(price, ticker_to_use, ccy)
 
             # ── Store in session state for BS Pricer ──────────────────────
             st.session_state["bs_spot"]   = round(price, 4)
@@ -592,7 +611,7 @@ with tabs[1]:
               <div>
                 <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;
                 color:#94a3b8;margin-bottom:4px;">LAST PRICE</div>
-                <div style="font-size:28px;font-weight:800;color:#0f172a;">{price:,.2f} {ccy}</div>
+                <div style="font-size:28px;font-weight:800;color:#0f172a;">{price_label}</div>
               </div>
               <div>
                 <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;
@@ -644,7 +663,7 @@ with tabs[1]:
             ))
             fig_style(fig_price, f"{minfo['name']} — 1-Year Price History")
             fig_price.update_xaxes(title="Date", rangeslider_visible=False)
-            fig_price.update_yaxes(title=f"Price ({ccy})")
+            fig_price.update_yaxes(title=f"Price ({unit or 'value'})")
             st.plotly_chart(fig_price, use_container_width=True)
 
             # ── Returns & Rolling vol ────────────────────────────────────
